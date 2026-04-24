@@ -1,0 +1,43 @@
+name: Daily Stock Analysis
+
+on:
+  schedule:
+    # 08:10 Lisboa (UTC+1 verão / UTC+0 inverno)
+    # Verão  (Mar–Out): cron 10 7  → 08:10 Lisboa
+    # Inverno (Out–Mar): cron 10 8  → 08:10 Lisboa
+    # Activo agora para verão; ajusta o "7" para "8" em Outubro
+    - cron: '10 7 * * 1-5'
+  workflow_dispatch:   # permite correr manualmente no GitHub
+
+jobs:
+  analyze-and-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Data de hoje (Lisboa)
+        id: date
+        run: echo "today=$(TZ='Europe/Lisbon' date +'%d/%m/%Y')" >> $GITHUB_OUTPUT
+
+      - name: Correr análise
+        run: node daily-screener.mjs
+
+      - name: Enviar email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "📈 Top 15 Acções — ${{ steps.date.outputs.today }}"
+          to: joaommdc@gmail.com
+          from: "Stock Analysis <${{ secrets.GMAIL_USERNAME }}>"
+          html_body: file://report.html
