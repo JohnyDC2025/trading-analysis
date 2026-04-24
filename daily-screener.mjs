@@ -1,329 +1,440 @@
-// daily-screener.mjs
-// Análise diária: Yahoo Finance (OHLCV + indicadores) + TradingView Screener (rating)
-// Corre via GitHub Actions — gera report.html com o top 15
-
+// daily-screener.mjs — v2: Multi-timeframe (Diário + 4H + 1H) + VWAP
 import { writeFileSync, readFileSync } from 'fs';
 
 const WATCHLIST = JSON.parse(readFileSync('./watchlist.json', 'utf8'));
 const REPORT_PATH = './report.html';
 
-// ─── Helpers técnicos ─────────────────────────────────────────────────────────
+// ─── Indicator helpers ────────────────────────────────────────────────────────
 function ema(src, p) {
-  const k = 2 / (p + 1); let v = src[0]; const o = [v];
-  for (let i = 1; i < src.length; i++) { v = src[i] * k + v * (1 - k); o.push(v); }
+  const k = 2/(p+1); let v = src[0]; const o = [v];
+  for (let i=1; i<src.length; i++) { v = src[i]*k + v*(1-k); o.push(v); }
   return o;
 }
 function rsi(src, p) {
-  let g = 0, l = 0;
-  for (let i = 1; i <= p; i++) { const d = src[i] - src[i - 1]; if (d > 0) g += d; else l -= d; }
-  let ag = g / p, al = l / p;
+  let g=0, l=0;
+  for (let i=1; i<=p; i++) { const d=src[i]-src[i-1]; if(d>0) g+=d; else l-=d; }
+  let ag=g/p, al=l/p;
   const o = new Array(p).fill(null);
-  o.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
-  for (let i = p + 1; i < src.length; i++) {
-    const d = src[i] - src[i - 1], gi = d > 0 ? d : 0, li = d < 0 ? -d : 0;
-    ag = (ag * (p - 1) + gi) / p; al = (al * (p - 1) + li) / p;
-    o.push(al === 0 ? 100 : 100 - 100 / (1 + ag / al));
+  o.push(al===0 ? 100 : 100-100/(1+ag/al));
+  for (let i=p+1; i<src.length; i++) {
+    const d=src[i]-src[i-1], gi=d>0?d:0, li=d<0?-d:0;
+    ag=(ag*(p-1)+gi)/p; al=(al*(p-1)+li)/p;
+    o.push(al===0 ? 100 : 100-100/(1+ag/al));
   }
   return o;
 }
 function macd(src) {
-  const fast = ema(src, 12), slow = ema(src, 26);
-  const line = fast.map((v, i) => v - slow[i]);
-  const signal = ema(line, 9);
-  return { line, signal, hist: line.map((v, i) => v - signal[i]) };
+  const fast=ema(src,12), slow=ema(src,26);
+  const line=fast.map((v,i)=>v-slow[i]);
+  const signal=ema(line,9);
+  return { line, signal, hist: line.map((v,i)=>v-signal[i]) };
 }
 function bb(src, p, m) {
-  return src.map((_, i) => {
-    if (i < p - 1) return null;
-    const sl = src.slice(i - p + 1, i + 1);
-    const mn = sl.reduce((a, b) => a + b, 0) / p;
-    const sd = Math.sqrt(sl.reduce((a, b) => a + (b - mn) ** 2, 0) / p);
-    return { upper: mn + m * sd, mid: mn, lower: mn - m * sd };
+  return src.map((_,i) => {
+    if(i<p-1) return null;
+    const sl=src.slice(i-p+1,i+1);
+    const mn=sl.reduce((a,b)=>a+b,0)/p;
+    const sd=Math.sqrt(sl.reduce((a,b)=>a+(b-mn)**2,0)/p);
+    return {upper:mn+m*sd, mid:mn, lower:mn-m*sd};
   });
 }
 function atrFn(h, l, c, p) {
-  const tr = [h[0] - l[0]];
-  for (let i = 1; i < h.length; i++)
-    tr.push(Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
-  let v = tr.slice(0, p).reduce((a, b) => a + b, 0) / p;
-  const o = new Array(p - 1).fill(null); o.push(v);
-  for (let i = p; i < tr.length; i++) { v = (v * (p - 1) + tr[i]) / p; o.push(v); }
+  const tr=[h[0]-l[0]];
+  for(let i=1; i<h.length; i++) tr.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));
+  let v=tr.slice(0,p).reduce((a,b)=>a+b,0)/p;
+  const o=new Array(p-1).fill(null); o.push(v);
+  for(let i=p; i<tr.length; i++) { v=(v*(p-1)+tr[i])/p; o.push(v); }
   return o;
 }
 function stoch(h, l, c, kp, dp) {
-  const k = c.map((_, i) => {
-    if (i < kp - 1) return null;
-    const hh = Math.max(...h.slice(i - kp + 1, i + 1)), ll = Math.min(...l.slice(i - kp + 1, i + 1));
-    return hh === ll ? 50 : (c[i] - ll) / (hh - ll) * 100;
+  const k=c.map((_,i) => {
+    if(i<kp-1) return null;
+    const hh=Math.max(...h.slice(i-kp+1,i+1)), ll=Math.min(...l.slice(i-kp+1,i+1));
+    return hh===ll ? 50 : (c[i]-ll)/(hh-ll)*100;
   });
-  const d = k.map((_, i) => {
-    if (i < kp + dp - 2) return null;
-    const sl = k.slice(i - dp + 1, i + 1).filter(x => x !== null);
-    return sl.length === dp ? sl.reduce((a, b) => a + b, 0) / dp : null;
+  const d=k.map((_,i) => {
+    if(i<kp+dp-2) return null;
+    const sl=k.slice(i-dp+1,i+1).filter(x=>x!==null);
+    return sl.length===dp ? sl.reduce((a,b)=>a+b,0)/dp : null;
   });
-  return { k, d };
+  return {k,d};
 }
 function adxFn(h, l, c, p) {
-  const tr = [], pdm = [], ndm = [];
-  for (let i = 1; i < h.length; i++) {
-    tr.push(Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
-    pdm.push(Math.max(h[i] - h[i - 1], 0) > Math.max(l[i - 1] - l[i], 0) ? Math.max(h[i] - h[i - 1], 0) : 0);
-    ndm.push(Math.max(l[i - 1] - l[i], 0) > Math.max(h[i] - h[i - 1], 0) ? Math.max(l[i - 1] - l[i], 0) : 0);
+  const tr=[],pdm=[],ndm=[];
+  for(let i=1; i<h.length; i++) {
+    tr.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));
+    pdm.push(Math.max(h[i]-h[i-1],0)>Math.max(l[i-1]-l[i],0)?Math.max(h[i]-h[i-1],0):0);
+    ndm.push(Math.max(l[i-1]-l[i],0)>Math.max(h[i]-h[i-1],0)?Math.max(l[i-1]-l[i],0):0);
   }
-  function sm(a, p) { let s = a.slice(0, p).reduce((x, y) => x + y, 0); const o = [s]; for (let i = p; i < a.length; i++) { s = s - s / p + a[i]; o.push(s); } return o; }
-  const a14 = sm(tr, p), sp = sm(pdm, p), sn = sm(ndm, p);
-  const pdi = sp.map((v, i) => v / a14[i] * 100), ndi = sn.map((v, i) => v / a14[i] * 100);
-  const dx = pdi.map((v, i) => Math.abs(v - ndi[i]) / (v + ndi[i]) * 100);
-  return { pdi, ndi, adx: ema(dx, p) };
+  function sm(a,p){let s=a.slice(0,p).reduce((x,y)=>x+y,0);const o=[s];for(let i=p;i<a.length;i++){s=s-s/p+a[i];o.push(s);}return o;}
+  const a14=sm(tr,p),sp=sm(pdm,p),sn=sm(ndm,p);
+  const pdi=sp.map((v,i)=>v/a14[i]*100),ndi=sn.map((v,i)=>v/a14[i]*100);
+  const dx=pdi.map((v,i)=>Math.abs(v-ndi[i])/(v+ndi[i])*100);
+  return {pdi,ndi,adx:ema(dx,p)};
 }
 
-// ─── Análise técnica ──────────────────────────────────────────────────────────
-function buildAnalysis(stock, bars) {
-  const C = bars.map(b => b.close), H = bars.map(b => b.high), L = bars.map(b => b.low), V = bars.map(b => b.volume);
-  const n = C.length, i = n - 1;
-  const e9 = ema(C, 9), e21 = ema(C, 21), e50 = ema(C, 50), e100 = ema(C, 100), e200 = ema(C, 200);
-  const r = rsi(C, 14), m = macd(C), bl = bb(C, 20, 2), a = atrFn(H, L, C, 14), st = stoch(H, L, C, 14, 3), adx = adxFn(H, L, C, 14);
-  const ai = adx.adx.length - 1;
-  const bLast = bl[i];
-  const avgVol = V.slice(-20).reduce((a, b) => a + b, 0) / 20;
+// ─── Multi-timeframe helpers ──────────────────────────────────────────────────
 
-  const rsiVal = r[i];
-  const bbPos = (C[i] - bLast.lower) / (bLast.upper - bLast.lower) * 100;
-  const rsiSig = rsiVal > 70 ? 'overbought' : rsiVal < 30 ? 'oversold' : rsiVal >= 50 ? 'bullish_zone' : 'bearish_zone';
-  const bbSig  = bbPos > 80 ? 'overbought' : bbPos < 20 ? 'oversold' : 'normal';
-  const macdTrend  = m.hist[i] > m.hist[i - 1] ? 'improving' : 'deteriorating';
-  const macdCross  = m.line[i] > m.signal[i] ? 'bullish' : 'bearish';
-  const priceAbove = C[i] > e9[i] && C[i] > e21[i] && C[i] > e50[i] && C[i] > e100[i] && C[i] > e200[i];
-  const bullAlign  = e9[i] > e21[i] && e21[i] > e50[i] && e50[i] > e100[i] && e100[i] > e200[i];
-  const dominant   = adx.pdi[ai] > adx.ndi[ai] ? 'buyers' : 'sellers';
-  const stochK     = st.k[i] ?? 0;
-  const week2Pct   = (C[i] - C[i - 10]) / C[i - 10] * 100;
+// Agrega candles horárias em 4H
+function aggregate4H(bars) {
+  const result = [];
+  for(let i=0; i<bars.length; i+=4) {
+    const chunk = bars.slice(i, i+4);
+    if(chunk.length < 4) break;
+    result.push({
+      time:   chunk[0].time,
+      open:   chunk[0].open,
+      high:   Math.max(...chunk.map(b=>b.high)),
+      low:    Math.min(...chunk.map(b=>b.low)),
+      close:  chunk[chunk.length-1].close,
+      volume: chunk.reduce((s,b)=>s+b.volume, 0)
+    });
+  }
+  return result;
+}
 
-  let score = 0, signals = [];
-  if (rsiSig === 'bullish_zone') { score += 2; signals.push('RSI zona bullish'); }
-  if (rsiSig === 'oversold')     { score += 2; signals.push('RSI sobrevendido'); }
-  if (macdTrend === 'improving') { score += 2; signals.push('MACD a melhorar'); }
-  if (macdCross === 'bullish')   { score += 1; signals.push('MACD bullish'); }
-  if (priceAbove)                { score += 2; signals.push('Acima de todas as EMAs'); }
-  if (bullAlign)                 { score += 1; signals.push('EMAs alinhadas'); }
-  if (dominant === 'buyers')     { score += 1; signals.push('Compradores dominantes'); }
-  if (bbSig === 'oversold')      { score += 2; signals.push('BB sobrevendido'); }
-  if (rsiSig === 'overbought')   { score -= 2; signals.push('RSI sobrecomprado'); }
-  if (bbSig === 'overbought')    { score -= 1; signals.push('BB sobrecomprado'); }
-  if (stochK > 80)               { score -= 1; signals.push('Stoch sobrecomprado'); }
-  if (week2Pct < -3)             { score -= 1; signals.push('Tendência baixa 2sem'); }
+// VWAP da última sessão disponível
+function calcVWAP(hourlyBars) {
+  if(!hourlyBars || !hourlyBars.length) return null;
+  const lastD = new Date(hourlyBars.at(-1).time * 1000);
+  const lastKey = `${lastD.getUTCFullYear()}-${lastD.getUTCMonth()}-${lastD.getUTCDate()}`;
+  const session = hourlyBars.filter(b => {
+    const d = new Date(b.time * 1000);
+    return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}` === lastKey;
+  });
+  if(!session.length) return null;
+  const tpv = session.reduce((s,b)=>s+(b.high+b.low+b.close)/3*b.volume, 0);
+  const vol = session.reduce((s,b)=>s+b.volume, 0);
+  return vol > 0 ? tpv/vol : null;
+}
+
+// RSI + MACD para qualquer timeframe, com seta de tendência
+function computeTF(bars) {
+  if(!bars || bars.length < 35) return null;
+  const C = bars.map(b=>b.close);
+  const n=C.length, i=n-1;
+  const r = rsi(C, 14);
+  const m = macd(C);
+  const rv = r[i], rp = r[i-1];
+  if(rv==null || rp==null) return null;
+  return {
+    rsi: {
+      value: +rv.toFixed(1),
+      trend: rv > rp+0.2 ? '↑' : rv < rp-0.2 ? '↓' : '→'
+    },
+    macd: {
+      trend: m.hist[i] > m.hist[i-1] ? '↑' : '↓',
+      cross: m.line[i] > m.signal[i] ? 'bull' : 'bear'
+    }
+  };
+}
+
+// ─── Análise principal ────────────────────────────────────────────────────────
+function buildAnalysis(stock, dailyBars, hourlyBars) {
+  const C=dailyBars.map(b=>b.close), H=dailyBars.map(b=>b.high),
+        L=dailyBars.map(b=>b.low),   V=dailyBars.map(b=>b.volume);
+  const n=C.length, i=n-1;
+  const e9=ema(C,9),e21=ema(C,21),e50=ema(C,50),e100=ema(C,100),e200=ema(C,200);
+  const r=rsi(C,14), m=macd(C), blArr=bb(C,20,2), a=atrFn(H,L,C,14),
+        st=stoch(H,L,C,14,3), adx=adxFn(H,L,C,14);
+  const ai=adx.adx.length-1, bLast=blArr[i];
+  const avgVol=V.slice(-20).reduce((a,b)=>a+b,0)/20;
+
+  const rsiVal=r[i], rsiPrev=r[i-1];
+  const bbPos=(C[i]-bLast.lower)/(bLast.upper-bLast.lower)*100;
+  const rsiSig=rsiVal>70?'overbought':rsiVal<30?'oversold':rsiVal>=50?'bullish_zone':'bearish_zone';
+  const bbSig=bbPos>80?'overbought':bbPos<20?'oversold':'normal';
+  const macdTrend=m.hist[i]>m.hist[i-1]?'improving':'deteriorating';
+  const macdCross=m.line[i]>m.signal[i]?'bullish':'bearish';
+  const priceAbove=C[i]>e9[i]&&C[i]>e21[i]&&C[i]>e50[i]&&C[i]>e100[i]&&C[i]>e200[i];
+  const bullAlign=e9[i]>e21[i]&&e21[i]>e50[i]&&e50[i]>e100[i]&&e100[i]>e200[i];
+  const dominant=adx.pdi[ai]>adx.ndi[ai]?'buyers':'sellers';
+  const stochK=st.k[i]??0;
+  const week2Pct=(C[i]-C[i-10])/C[i-10]*100;
+
+  // Multi-timeframe
+  const bars4h = aggregate4H(hourlyBars || []);
+  const tf4h = computeTF(bars4h);
+  const tf1h = computeTF(hourlyBars || []);
+  const vwap = calcVWAP(hourlyBars || []);
+  const vwapPct = vwap ? +((C[i]-vwap)/vwap*100).toFixed(2) : null;
+
+  let score=0, signals=[];
+
+  // Sinais diários
+  if(rsiSig==='bullish_zone') { score+=2; signals.push('RSI D zona bullish'); }
+  if(rsiSig==='oversold')     { score+=2; signals.push('RSI D sobrevendido'); }
+  if(macdTrend==='improving') { score+=2; signals.push('MACD D a melhorar'); }
+  if(macdCross==='bullish')   { score+=1; signals.push('MACD D bullish'); }
+  if(priceAbove)              { score+=2; signals.push('Acima de todas as EMAs'); }
+  if(bullAlign)               { score+=1; signals.push('EMAs alinhadas'); }
+  if(dominant==='buyers')     { score+=1; signals.push('Compradores dominantes'); }
+  if(bbSig==='oversold')      { score+=2; signals.push('BB sobrevendido'); }
+  if(rsiSig==='overbought')   { score-=2; signals.push('RSI D sobrecomprado'); }
+  if(bbSig==='overbought')    { score-=1; signals.push('BB sobrecomprado'); }
+  if(stochK>80)               { score-=1; signals.push('Stoch sobrecomprado'); }
+  if(week2Pct<-3)             { score-=1; signals.push('Tendência baixa 2sem'); }
+
+  // Sinais 4H
+  if(tf4h) {
+    if(tf4h.rsi.value>=50&&tf4h.rsi.value<70) { score+=1; signals.push('RSI 4H zona bullish'); }
+    if(tf4h.rsi.value<30)                      { score+=1; signals.push('RSI 4H sobrevendido'); }
+    if(tf4h.rsi.value>70)                      { score-=1; signals.push('RSI 4H sobrecomprado'); }
+    if(tf4h.macd.trend==='↑')                  { score+=1; signals.push('MACD 4H a melhorar'); }
+  }
+
+  // Sinais 1H
+  if(tf1h) {
+    if(tf1h.rsi.value<30)     { score+=1; signals.push('RSI 1H sobrevendido'); }
+    if(tf1h.rsi.value>70)     { score-=1; signals.push('RSI 1H sobrecomprado'); }
+    if(tf1h.macd.trend==='↑') { score+=1; signals.push('MACD 1H a melhorar'); }
+  }
+
+  // VWAP
+  if(vwapPct!=null && vwapPct>0) { score+=1; signals.push(`Acima VWAP +${vwapPct}%`); }
 
   return {
     symbol: stock.symbol,
-    name: stock.name,
+    name:   stock.name,
     sector: stock.sector,
     price: {
-      current: C[i],
-      change_pct: +((C[i] - C[i - 1]) / C[i - 1] * 100).toFixed(2)
+      current:    C[i],
+      change_pct: +((C[i]-C[i-1])/C[i-1]*100).toFixed(2)
     },
-    rsi: +rsiVal.toFixed(1),
-    volume_ratio: +(V[i] / avgVol).toFixed(2),
+    rsi_d:  { value: +rsiVal.toFixed(1), trend: rsiVal>rsiPrev+0.2?'↑':rsiVal<rsiPrev-0.2?'↓':'→' },
+    rsi_4h: tf4h ? tf4h.rsi  : null,
+    rsi_1h: tf1h ? tf1h.rsi  : null,
+    macd_d: { trend: macdTrend==='improving'?'↑':'↓', cross: macdCross },
+    macd_4h: tf4h ? tf4h.macd : null,
+    macd_1h: tf1h ? tf1h.macd : null,
+    vwap_pct: vwapPct,
+    volume_ratio: +(V[i]/avgVol).toFixed(2),
     composite: { score, signals }
   };
 }
 
-// ─── Yahoo Finance OHLCV ──────────────────────────────────────────────────────
-async function fetchBars(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=1y`;
+// ─── Yahoo Finance ─────────────────────────────────────────────────────────────
+async function fetchBars(symbol, interval='1d', range='1y') {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`;
   const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const json = await resp.json();
   const res = json.chart.result[0];
-  const ts = res.timestamp, q = res.indicators.quote[0];
-  const raw = ts.map((t, i) => ({ time: t, open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i] ?? 0 }));
-  const clean = raw.filter(b =>
-    b.close != null && b.close > 0 && b.high != null && b.low != null &&
-    b.high >= b.low && b.high >= b.close && b.low <= b.close
-  );
-  clean.sort((a, b) => a.time - b.time);
-  return clean.slice(-300);
+  const ts=res.timestamp, q=res.indicators.quote[0];
+  const raw = ts.map((t,i)=>({time:t,open:q.open[i],high:q.high[i],low:q.low[i],close:q.close[i],volume:q.volume[i]??0}));
+  const clean = raw.filter(b=>b.close!=null&&b.close>0&&b.high!=null&&b.low!=null&&b.high>=b.low&&b.high>=b.close&&b.low<=b.close);
+  clean.sort((a,b)=>a.time-b.time);
+  return interval==='1d' ? clean.slice(-300) : clean.slice(-600);
 }
 
-// ─── TradingView Screener ─────────────────────────────────────────────────────
+// ─── TradingView Screener ──────────────────────────────────────────────────────
 async function fetchTVScreener(stocks) {
-  const tickers = stocks.map(s => s.tv);
-  const columns = [
-    'close', 'change', 'RSI', 'MACD.macd', 'MACD.signal',
-    'EMA50', 'EMA200', 'Recommend.All', 'Recommend.MA', 'Recommend.Other',
-    'volume', 'relative_volume_10d_calc', 'market_cap_basic'
-  ];
+  const tickers = stocks.map(s=>s.tv);
+  const columns = ['close','change','RSI','MACD.macd','MACD.signal','EMA50','EMA200',
+                   'Recommend.All','Recommend.MA','Recommend.Other',
+                   'volume','relative_volume_10d_calc','market_cap_basic'];
   const resp = await fetch('https://scanner.tradingview.com/global/scan', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'Mozilla/5.0',
-      'Origin': 'https://www.tradingview.com',
-      'Referer': 'https://www.tradingview.com/'
-    },
+    headers: { 'Content-Type':'application/json','User-Agent':'Mozilla/5.0',
+               'Origin':'https://www.tradingview.com','Referer':'https://www.tradingview.com/' },
     body: JSON.stringify({ symbols: { tickers }, columns })
   });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const json = await resp.json();
   const map = {};
-  for (const item of (json.data || [])) {
+  for(const item of (json.data||[])) {
     const vals = {};
-    columns.forEach((col, i) => { vals[col] = item.d[i]; });
+    columns.forEach((col,i)=>{ vals[col]=item.d[i]; });
     map[item.s] = vals;
   }
   return map;
 }
 
-// ─── Labels e cores ───────────────────────────────────────────────────────────
+// ─── Labels e cores ────────────────────────────────────────────────────────────
 function tvLabel(val) {
-  if (val == null)  return { text: 'N/D',         color: '#999999' };
-  if (val >= 0.5)   return { text: '🟢 Forte Compra', color: '#00897b' };
-  if (val >= 0.1)   return { text: '🟩 Compra',   color: '#43a047' };
-  if (val > -0.1)   return { text: '⚪ Neutro',   color: '#fb8c00' };
-  if (val > -0.5)   return { text: '🟥 Venda',    color: '#e53935' };
-  return               { text: '🔴 Forte Venda', color: '#b71c1c' };
+  if(val==null) return {text:'N/D',         color:'#9e9e9e'};
+  if(val>=0.5)  return {text:'🟢 Forte Compra', color:'#00897b'};
+  if(val>=0.1)  return {text:'🟩 Compra',    color:'#43a047'};
+  if(val>-0.1)  return {text:'⚪ Neutro',    color:'#fb8c00'};
+  if(val>-0.5)  return {text:'🟥 Venda',     color:'#e53935'};
+  return              {text:'🔴 Forte Venda',color:'#b71c1c'};
 }
 function combinedLabel(score) {
-  if (score >= 10)  return { text: '🟢 Forte Compra', color: '#00897b', bg: '#e0f2f1' };
-  if (score >= 6)   return { text: '🟡 Compra',       color: '#558b2f', bg: '#f1f8e9' };
-  if (score >= 2)   return { text: '⚪ Neutro',       color: '#e65100', bg: '#fff3e0' };
-  return               { text: '🔴 Evitar',           color: '#c62828', bg: '#ffebee' };
+  if(score>=12) return {text:'🟢 Forte Compra', color:'#00897b', bg:'#e0f2f1'};
+  if(score>=7)  return {text:'🟡 Compra',       color:'#558b2f', bg:'#f1f8e9'};
+  if(score>=3)  return {text:'⚪ Neutro',       color:'#e65100', bg:'#fff3e0'};
+  return             {text:'🔴 Evitar',         color:'#c62828', bg:'#ffebee'};
 }
+function rsiColor(v) { return v>70?'#c62828':v<30?'#2e7d32':'#37474f'; }
+function trendColor(t) { return t==='↑'?'#2e7d32':t==='↓'?'#c62828':'#9e9e9e'; }
 
-// ─── HTML do email ─────────────────────────────────────────────────────────────
+// ─── HTML ──────────────────────────────────────────────────────────────────────
 function generateHTML(top15, dateStr, totalAnalyzed) {
+
+  function rsiCell(tf) {
+    if(!tf) return '<span style="color:#bbb;font-size:10px">N/D</span>';
+    return `<span style="color:${rsiColor(tf.value)};font-weight:bold">${tf.value}</span>`
+         + `<span style="color:${trendColor(tf.trend)};font-size:14px;font-weight:bold"> ${tf.trend}</span>`;
+  }
+  function macdCell(tf) {
+    if(!tf) return '<span style="color:#bbb;font-size:10px">N/D</span>';
+    const c = tf.trend==='↑'?'#2e7d32':'#c62828';
+    return `<span style="color:${c};font-size:14px;font-weight:bold">${tf.trend}</span>`;
+  }
+
   const rows = top15.map((r, idx) => {
     const tv   = tvLabel(r.tvRecommend);
     const verd = combinedLabel(r.combined);
-    const chgColor = r.price.change_pct >= 0 ? '#2e7d32' : '#c62828';
-    const chgSign  = r.price.change_pct >= 0 ? '+' : '';
-    const topSignals = r.composite.signals.slice(0, 3).join(' · ') || '—';
-    const volStyle = r.volume_ratio >= 1.5 ? 'font-weight:bold; color:#1565c0;' : 'color:#555;';
+    const chgColor = r.price.change_pct>=0?'#2e7d32':'#c62828';
+    const chgSign  = r.price.change_pct>=0?'+':'';
+    const topSignals = r.composite.signals.slice(0,3).join(' · ') || '—';
+    const volStyle = r.volume_ratio>=1.5?'font-weight:bold;color:#1565c0':'color:#555';
+
+    const vwapStr = r.vwap_pct!=null
+      ? `<div style="margin-top:3px;font-size:10px;color:${r.vwap_pct>=0?'#2e7d32':'#c62828'}">VWAP ${r.vwap_pct>=0?'+':''}${r.vwap_pct}%</div>`
+      : '';
 
     return `
-    <tr style="border-bottom:1px solid #e0e0e0; background:${idx % 2 === 0 ? '#fafafa' : '#fff'};">
-      <td style="padding:9px 10px; text-align:center; font-weight:bold; color:#1565c0; font-size:15px;">${idx + 1}</td>
-      <td style="padding:9px 10px;">
-        <div style="font-weight:bold; font-size:14px; color:#212121;">${r.symbol}</div>
-        <div style="font-size:11px; color:#555; margin-top:1px;">${r.name}</div>
-        <div style="font-size:10px; color:#999; margin-top:1px;">${r.sector}</div>
+    <tr style="border-bottom:1px solid #e0e0e0;background:${idx%2===0?'#fafafa':'#fff'}">
+      <td style="padding:9px 10px;text-align:center;font-weight:bold;color:#1565c0;font-size:15px">${idx+1}</td>
+      <td style="padding:9px 10px">
+        <div style="font-weight:bold;font-size:14px;color:#212121">${r.symbol}</div>
+        <div style="font-size:11px;color:#555;margin-top:1px">${r.name}</div>
+        <div style="font-size:10px;color:#999">${r.sector}</div>
       </td>
-      <td style="padding:9px 10px; text-align:right; white-space:nowrap;">
-        <div style="font-weight:bold; font-size:13px;">${r.price.current.toFixed(2)}</div>
-        <div style="color:${chgColor}; font-size:11px;">${chgSign}${r.price.change_pct}%</div>
+      <td style="padding:9px 10px;text-align:right;white-space:nowrap">
+        <div style="font-weight:bold;font-size:13px">${r.price.current.toFixed(2)}</div>
+        <div style="color:${chgColor};font-size:11px">${chgSign}${r.price.change_pct}%</div>
       </td>
-      <td style="padding:9px 10px; text-align:center; font-size:13px; color:#37474f;">${r.rsi}</td>
-      <td style="padding:9px 10px; text-align:center; font-size:11px; ${volStyle}">${r.volume_ratio}x</td>
-      <td style="padding:9px 10px; text-align:center; font-size:11px; color:${tv.color}; white-space:nowrap;">${tv.text}</td>
-      <td style="padding:9px 10px; text-align:center; font-weight:bold; font-size:15px; color:${verd.color};">${r.combined.toFixed(1)}</td>
-      <td style="padding:9px 10px; text-align:center; font-size:12px; color:${verd.color}; background:${verd.bg}; border-radius:4px; white-space:nowrap;">${verd.text}</td>
-      <td style="padding:9px 10px; font-size:10px; color:#616161; max-width:180px;">${topSignals}</td>
+      <td style="padding:9px 10px;font-size:12px;white-space:nowrap;line-height:1.9">
+        <div><span style="color:#9e9e9e;font-size:10px">D &nbsp;</span>${rsiCell(r.rsi_d)}</div>
+        <div><span style="color:#9e9e9e;font-size:10px">4H </span>${rsiCell(r.rsi_4h)}</div>
+        <div><span style="color:#9e9e9e;font-size:10px">1H </span>${rsiCell(r.rsi_1h)}</div>
+      </td>
+      <td style="padding:9px 10px;font-size:12px;white-space:nowrap;line-height:1.9">
+        <div><span style="color:#9e9e9e;font-size:10px">D &nbsp;</span>${macdCell(r.macd_d)}</div>
+        <div><span style="color:#9e9e9e;font-size:10px">4H </span>${macdCell(r.macd_4h)}</div>
+        <div><span style="color:#9e9e9e;font-size:10px">1H </span>${macdCell(r.macd_1h)}</div>
+        ${vwapStr}
+      </td>
+      <td style="padding:9px 10px;text-align:center;font-size:12px;${volStyle}">${r.volume_ratio}x</td>
+      <td style="padding:9px 10px;text-align:center;font-size:11px;color:${tv.color};white-space:nowrap">${tv.text}</td>
+      <td style="padding:9px 10px;text-align:center;font-weight:bold;font-size:16px;color:${verd.color}">${r.combined.toFixed(1)}</td>
+      <td style="padding:9px 10px;text-align:center;font-size:11px;color:${verd.color};background:${verd.bg};border-radius:4px;white-space:nowrap">${verd.text}</td>
+      <td style="padding:9px 10px;font-size:10px;color:#616161;max-width:160px">${topSignals}</td>
     </tr>`;
   }).join('');
 
   return `<!DOCTYPE html>
 <html lang="pt">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0; padding:16px; background:#eeeeee; font-family:Arial,Helvetica,sans-serif;">
-  <div style="max-width:960px; margin:0 auto; background:#fff; border-radius:10px; overflow:hidden; box-shadow:0 3px 12px rgba(0,0,0,.15);">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:16px;background:#eeeeee;font-family:Arial,Helvetica,sans-serif;">
+<div style="max-width:1100px;margin:0 auto;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 3px 12px rgba(0,0,0,.15)">
 
-    <!-- Header -->
-    <div style="background:linear-gradient(135deg,#1565c0,#0d47a1); color:#fff; padding:22px 28px;">
-      <h1 style="margin:0; font-size:21px; letter-spacing:.3px;">📈 Análise Diária de Acções</h1>
-      <p style="margin:6px 0 0; font-size:13px; opacity:.85;">
-        Top 15 de ${totalAnalyzed} acções analisadas &nbsp;·&nbsp; ${dateStr}
-        &nbsp;·&nbsp; Yahoo Finance + TradingView Screener
-      </p>
-    </div>
-
-    <!-- Tabela -->
-    <div style="overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">
-        <thead>
-          <tr style="background:#e3f2fd; color:#0d47a1; font-size:11px; text-transform:uppercase; letter-spacing:.4px;">
-            <th style="padding:10px; text-align:center;">#</th>
-            <th style="padding:10px; text-align:left;">Acção</th>
-            <th style="padding:10px; text-align:right;">Preço</th>
-            <th style="padding:10px; text-align:center;">RSI</th>
-            <th style="padding:10px; text-align:center;">Vol.</th>
-            <th style="padding:10px; text-align:center;">TV Rating</th>
-            <th style="padding:10px; text-align:center;">Score</th>
-            <th style="padding:10px; text-align:center;">Avaliação</th>
-            <th style="padding:10px; text-align:left;">Sinais principais</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-
-    <!-- Legenda -->
-    <div style="padding:16px 24px; background:#f5f5f5; border-top:1px solid #e0e0e0;">
-      <p style="margin:0; font-size:11px; color:#757575; line-height:1.7;">
-        <strong>Score</strong> = análise técnica Yahoo Finance (RSI, MACD, EMAs, Bollinger, ADX, Stochastic)
-        + TradingView Recommend × 5 &nbsp;|&nbsp;
-        <strong>Forte Compra</strong> ≥ 10 &nbsp;·&nbsp; <strong>Compra</strong> ≥ 6 &nbsp;·&nbsp;
-        <strong>Neutro</strong> ≥ 2 &nbsp;·&nbsp; <strong>Evitar</strong> &lt; 2<br>
-        Gerado automaticamente via GitHub Actions. Apenas para fins informativos — não constitui conselho financeiro.
-      </p>
-    </div>
-
+  <div style="background:linear-gradient(135deg,#1565c0,#0d47a1);color:#fff;padding:22px 28px">
+    <h1 style="margin:0;font-size:21px">📈 Análise Diária de Acções</h1>
+    <p style="margin:6px 0 0;font-size:13px;opacity:.85">
+      Top 15 de ${totalAnalyzed} acções &nbsp;·&nbsp; ${dateStr}
+      &nbsp;·&nbsp; Yahoo Finance (Diário + 4H + 1H) + TradingView Screener
+    </p>
   </div>
+
+  <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead>
+        <tr style="background:#e3f2fd;color:#0d47a1;font-size:10px;text-transform:uppercase;letter-spacing:.5px">
+          <th style="padding:10px;text-align:center">#</th>
+          <th style="padding:10px;text-align:left">Acção</th>
+          <th style="padding:10px;text-align:right">Preço</th>
+          <th style="padding:10px;text-align:left">RSI</th>
+          <th style="padding:10px;text-align:left">MACD / VWAP</th>
+          <th style="padding:10px;text-align:center">Vol.</th>
+          <th style="padding:10px;text-align:center">TV Rating</th>
+          <th style="padding:10px;text-align:center">Score</th>
+          <th style="padding:10px;text-align:center">Avaliação</th>
+          <th style="padding:10px;text-align:left">Sinais principais</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+
+  <div style="padding:16px 24px;background:#f5f5f5;border-top:1px solid #e0e0e0">
+    <p style="margin:0;font-size:11px;color:#757575;line-height:1.9">
+      <strong>RSI / MACD:</strong> D = Diário &nbsp;·&nbsp; 4H = 4 Horas &nbsp;·&nbsp; 1H = 1 Hora
+      &nbsp;&nbsp;
+      <span style="color:#2e7d32;font-weight:bold">↑ a subir</span> &nbsp;
+      <span style="color:#c62828;font-weight:bold">↓ a descer</span> &nbsp;
+      <span style="color:#9e9e9e;font-weight:bold">→ lateral</span>
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <strong>Score</strong> = indicadores técnicos multi-TF (Yahoo Finance) + TV Recommend × 5
+      &nbsp;&nbsp;|&nbsp;&nbsp;
+      <strong>Forte Compra</strong> ≥ 12 &nbsp;·&nbsp;
+      <strong>Compra</strong> ≥ 7 &nbsp;·&nbsp;
+      <strong>Neutro</strong> ≥ 3 &nbsp;·&nbsp;
+      <strong>Evitar</strong> &lt; 3<br>
+      Apenas para fins informativos. Não constitui conselho financeiro.
+    </p>
+  </div>
+
+</div>
 </body>
 </html>`;
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const dateStr = new Date().toLocaleDateString('pt-PT', {
-    timeZone: 'Europe/Lisbon', day: '2-digit', month: '2-digit', year: 'numeric'
+    timeZone:'Europe/Lisbon', day:'2-digit', month:'2-digit', year:'numeric'
   });
 
-  // 1. TradingView Screener
-  console.log('📡 A obter TradingView Screener…');
+  console.log('📡 TradingView Screener…');
   let tvData = {};
   try {
     tvData = await fetchTVScreener(WATCHLIST);
-    console.log(`   ✓ Dados TV para ${Object.keys(tvData).length} acções`);
-  } catch (e) {
-    console.warn(`   ⚠ TV Screener falhou: ${e.message} — a continuar sem rating TV`);
+    console.log(`   ✓ ${Object.keys(tvData).length} acções`);
+  } catch(e) {
+    console.warn(`   ⚠ Falhou: ${e.message} — a continuar sem TV rating`);
   }
 
-  // 2. Yahoo Finance + análise técnica
-  console.log('\n📊 A obter Yahoo Finance OHLCV…');
+  console.log('\n📊 Yahoo Finance (diário + horário em paralelo)…');
   const results = [];
-  for (const stock of WATCHLIST) {
+  for(const stock of WATCHLIST) {
     try {
       process.stdout.write(`   ${stock.yahoo.padEnd(10)}`);
-      const bars = await fetchBars(stock.yahoo);
-      const analysis = buildAnalysis(stock, bars);
-      const tv = tvData[stock.tv] ?? {};
-      const tvRec = tv['Recommend.All'] ?? null;
-      const tvScore = tvRec != null ? tvRec * 5 : 0;
+      const [dailyBars, hourlyBars] = await Promise.all([
+        fetchBars(stock.yahoo, '1d', '1y'),
+        fetchBars(stock.yahoo, '1h', '60d').catch(()=>[])
+      ]);
+      const analysis = buildAnalysis(stock, dailyBars, hourlyBars);
+      const tv       = tvData[stock.tv] ?? {};
+      const tvRec    = tv['Recommend.All'] ?? null;
+      const tvScore  = tvRec!=null ? tvRec*5 : 0;
       const combined = analysis.composite.score + tvScore;
-      results.push({ ...analysis, tvRecommend: tvRec, combined });
-      console.log(`score=${analysis.composite.score.toString().padStart(3)}  tv=${tvRec != null ? tvRec.toFixed(2) : ' N/D'}  combined=${combined.toFixed(1)}`);
-    } catch (e) {
+      results.push({...analysis, tvRecommend: tvRec, combined});
+      console.log(
+        `RSI D:${analysis.rsi_d.value}${analysis.rsi_d.trend} ` +
+        `4H:${analysis.rsi_4h?.value??'--'}${analysis.rsi_4h?.trend??''} ` +
+        `1H:${analysis.rsi_1h?.value??'--'}${analysis.rsi_1h?.trend??''} ` +
+        `score=${analysis.composite.score.toString().padStart(3)} ` +
+        `combined=${combined.toFixed(1)}`
+      );
+    } catch(e) {
       console.warn(`   ✗ SKIP ${stock.yahoo}: ${e.message}`);
     }
   }
 
-  if (results.length === 0) {
-    console.error('Nenhuma acção analisada com sucesso.');
-    process.exit(1);
-  }
+  if(!results.length) { console.error('Sem resultados.'); process.exit(1); }
 
-  // 3. Ordenar e seleccionar top 15
-  results.sort((a, b) => b.combined - a.combined);
-  const top15 = results.slice(0, 15);
+  results.sort((a,b)=>b.combined-a.combined);
+  const top15 = results.slice(0,15);
 
-  // 4. Gerar HTML e guardar
-  const html = generateHTML(top15, dateStr, results.length);
-  writeFileSync(REPORT_PATH, html, 'utf8');
-
-  console.log(`\n✅ Report escrito em ${REPORT_PATH}`);
+  writeFileSync(REPORT_PATH, generateHTML(top15, dateStr, results.length), 'utf8');
+  console.log(`\n✅ Report escrito → ${REPORT_PATH}`);
   console.log('\n📋 Top 15:');
-  top15.forEach((r, i) =>
-    console.log(`   ${String(i + 1).padStart(2)}. ${r.symbol.padEnd(6)} ${r.name.padEnd(28)} combined=${r.combined.toFixed(1).padStart(5)}`)
+  top15.forEach((r,i) =>
+    console.log(`   ${String(i+1).padStart(2)}. ${r.symbol.padEnd(6)} RSI D:${r.rsi_d.value}${r.rsi_d.trend} 4H:${r.rsi_4h?.value??'N/D'}${r.rsi_4h?.trend??''} 1H:${r.rsi_1h?.value??'N/D'}${r.rsi_1h?.trend??''} → combined=${r.combined.toFixed(1)}`)
   );
 }
 
-main().catch(e => { console.error('ERRO:', e); process.exit(1); });
+main().catch(e=>{ console.error('ERRO:', e); process.exit(1); });
