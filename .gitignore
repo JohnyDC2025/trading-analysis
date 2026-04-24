@@ -1,3 +1,4 @@
-*.json
+report.html
+*_analysis.json
 node_modules/
 .env
