@@ -7,22 +7,26 @@ import { writeFileSync } from 'fs';
 const MARKET = (process.env.MARKET || 'europe').toLowerCase();
 const REPORT_PATH = './report.html';
 
+// Ambos usam global/scan — filtramos as bolsas em código
+const SCAN_URL = 'https://scanner.tradingview.com/global/scan';
+
 const CFG = {
   europe: {
-    endpoint:   'https://scanner.tradingview.com/europe/scan',
     rsiMin: 40, rsiMax: 75,
     changeMin:  0.5, changeMax: 3,
     volumeMin:  100_000,
     label:      '🇪🇺 Mercado Europeu',
-    timeNote:   '08:10h Lisboa · Mercado europeu a abrir'
+    timeNote:   '08:10h Lisboa · Mercado europeu a abrir',
+    exchanges:  new Set(['LSE','XETRA','AMS','EPA','BIT','BME','OSL','STO',
+                         'HEL','CPH','VIE','SWX','FWB','EURONEXT','IST','ATH','WSE'])
   },
   us: {
-    endpoint:   'https://scanner.tradingview.com/america/scan',
     rsiMin: 40, rsiMax: 75,
     changeMin:  1,   changeMax: 5,
     volumeMin:  500_000,
     label:      '🇺🇸 Mercado Americano',
-    timeNote:   '22:10h Lisboa · Após fecho (21h Lisboa)'
+    timeNote:   '22:10h Lisboa · Após fecho (21h Lisboa)',
+    exchanges:  new Set(['NASDAQ','NYSE','AMEX','BATS','CBOE'])
   }
 }[MARKET];
 
@@ -168,9 +172,9 @@ async function scanTV() {
       'market_cap_basic','description','sector'
     ],
     sort:  { sortBy: 'Recommend.All', sortOrder: 'desc' },
-    range: [0, 60]
+    range: [0, 100]   // pedir mais para compensar o filtro de bolsas
   };
-  const resp = await fetch(CFG.endpoint, {
+  const resp = await fetch(SCAN_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0',
@@ -179,12 +183,17 @@ async function scanTV() {
     body: JSON.stringify(body)
   });
   if(!resp.ok) throw new Error(`TV scan HTTP ${resp.status}`);
-  const json  = await resp.json();
-  const cols  = body.columns;
+  const json = await resp.json();
+  const cols = body.columns;
   return (json.data || []).map(item => {
     const d = {}; cols.forEach((c,i) => d[c] = item.d[i]);
     return { tvSymbol: item.s, yahoo: tvToYahoo(item.s), ...d };
-  }).filter(c => c.close != null && c.EMA50 != null && c.close > c.EMA50); // Preço > EMA50
+  }).filter(c => {
+    const exch = c.tvSymbol.split(':')[0];
+    return CFG.exchanges.has(exch)          // bolsa correcta para o mercado
+        && c.close != null && c.EMA50 != null
+        && c.close > c.EMA50;               // Preço > EMA50
+  });
 }
 
 // ─── Pré-score com dados TV (para seleccionar top 20 candidatos) ───────────────
