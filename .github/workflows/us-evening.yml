@@ -1,12 +1,12 @@
-name: EUA — Análise Noite
+name: EUA — Análise Tarde
 
 on:
   schedule:
-    # 22:10h Lisboa (UTC+1 verão | UTC+0 inverno)
-    # Verão  (Mar–Out): 21:10 UTC → 22:10 Lisboa  ← activo
-    # Inverno (Out–Mar): mudar para '10 22 * * 1-5'
-    # Mercado EUA fecha às 21h Lisboa (verão) / 22h (inverno)
-    - cron: '10 21 * * 1-5'
+    # 14:00h Lisboa (UTC+1 verão | UTC+0 inverno)
+    # Verão  (Mar–Out): 13:00 UTC → 14:00 Lisboa  ← activo
+    # Inverno (Out–Mar): mudar para '0 14 * * 1-5'
+    # Mercado EUA abre às 14:30h Lisboa (verão) — dados do fecho anterior
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:
 
 jobs:

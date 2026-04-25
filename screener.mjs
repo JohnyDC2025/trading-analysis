@@ -25,7 +25,7 @@ const CFG = {
     changeMin: 1, changeMax: 5,
     volumeMin: 500_000,
     label:    '🇺🇸 Mercado Americano',
-    timeNote: '22:10h Lisboa · Após fecho (21h Lisboa)',
+    timeNote: '14:00h Lisboa · Dados do fecho anterior (mercado abre às 14:30h)',
     exchanges: new Set(['NASDAQ','NYSE','AMEX','BATS','CBOE'])
   }
 }[MARKET];
