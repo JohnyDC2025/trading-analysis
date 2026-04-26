@@ -151,23 +151,54 @@ async function fetchTVData(symbols) {
   });
 }
 
-// ─── TV: MACD.hist[2] por timeframe (request separado com resolution no body) ──
-// O scanner TV não suporta notação mista [2]|TF — a solução é pedir num request
-// dedicado com resolution=TF, onde [2] funciona normalmente.
-async function fetchMacdHist2(symbols, resolution) {
+// ─── MACD local: cálculo a partir de OHLCV 1H (Yahoo Finance) ───────────────
+// O TV scanner não suporta MACD.hist[2]|TF — calculamos localmente.
+
+function calcMacdHist3(closes) {
+  // Devolve [hist_2barrasAtras, hist_1barraAtras, hist_atual] ou null se insuficiente
+  if (!closes || closes.length < 40) return null;
+  function emaArr(src, p) {
+    const k = 2/(p+1), out = new Array(p-1).fill(null);
+    out.push(src.slice(0,p).reduce((a,b)=>a+b,0)/p);
+    for (let i=p; i<src.length; i++) out.push(src[i]*k + out[i-1]*(1-k));
+    return out;
+  }
+  const e12=emaArr(closes,12), e26=emaArr(closes,26);
+  const macdLine=closes.map((_,i)=>e12[i]!=null&&e26[i]!=null?e12[i]-e26[i]:null).filter(v=>v!=null);
+  if (macdLine.length<9) return null;
+  const sig=emaArr(macdLine,9);
+  const hist=macdLine.map((v,i)=>sig[i]!=null?+(v-sig[i]).toFixed(4):null).filter(v=>v!=null);
+  return hist.length>=3 ? hist.slice(-3) : null;
+}
+
+function aggTo4H(bars) {
+  // Agrega barras 1H em 4H (usa UTC — adequado para comparar tendência)
+  const groups = new Map();
+  for (const b of bars) {
+    const dt = new Date(b.t*1000);
+    const key = dt.toISOString().slice(0,10) + '_' + Math.floor(dt.getUTCHours()/4);
+    if (!groups.has(key)) groups.set(key, {t:b.t, c:b.c});
+    else groups.get(key).c = b.c; // close = último do bloco 4H
+  }
+  return [...groups.values()].sort((a,b)=>a.t-b.t);
+}
+
+async function fetchIntradayMacdHist(yahooSymbol) {
+  // Devolve {h1:[h2,h1,h0], h4:[h2,h1,h0]} com os últimos 3 valores do histograma MACD
   try {
-    const body = {resolution, symbols:{tickers:symbols}, columns:['MACD.hist[2]']};
-    const resp = await fetch(SCAN_URL, {
-      method:'POST',
-      headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0','Origin':'https://www.tradingview.com','Referer':'https://www.tradingview.com/'},
-      body:JSON.stringify(body)
-    });
-    if (!resp.ok) return {};
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1h&range=60d`;
+    const resp = await fetch(url, {headers:{'User-Agent':'Mozilla/5.0'}});
+    if (!resp.ok) return null;
     const json = await resp.json();
-    const map = {};
-    for (const item of (json.data||[])) map[item.s] = item.d[0]??null;
-    return map;
-  } catch { return {}; }
+    const res = json.chart?.result?.[0];
+    if (!res?.timestamp) return null;
+    const q = res.indicators.quote[0];
+    const bars = res.timestamp.map((t,i)=>({t, c:+(q.close[i]||0).toFixed(4)})).filter(b=>b.c>0);
+    if (bars.length < 40) return null;
+    const h1 = calcMacdHist3(bars.map(b=>b.c));
+    const h4 = calcMacdHist3(aggTo4H(bars).map(b=>b.c));
+    return {h1, h4};
+  } catch { return null; }
 }
 
 function tvToYahoo(tvSym) {
@@ -1157,25 +1188,27 @@ async function main() {
   const candidates = await fetchTVData(SYMBOLS);
   console.log(`   ✓ ${candidates.length} acções`);
 
-  // Injectar MACD.hist[2] real para 4H e 1H (requests separados com resolution)
-  const [macdH2_4h, macdH2_1h] = await Promise.all([
-    fetchMacdHist2(SYMBOLS, '240'),
-    fetchMacdHist2(SYMBOLS, '60')
-  ]);
-  let ok4h=0, ok1h=0;
-  for (const c of candidates) {
-    const v4 = macdH2_4h[c.tvSymbol]; if (v4!=null){ c['MACD.hist[2]|240']=v4; ok4h++; }
-    const v1 = macdH2_1h[c.tvSymbol]; if (v1!=null){ c['MACD.hist[2]|60'] =v1; ok1h++; }
-  }
-  console.log(`   MACD hist[2] — 4H: ${ok4h}/${candidates.length} · 1H: ${ok1h}/${candidates.length}`);
-
-  console.log('\n📊 OHLCV 300 velas diárias (Yahoo Finance)…');
+  console.log('\n📊 OHLCV diário + MACD 1H/4H local (Yahoo Finance)…');
   const ohlcvMap = {};
+  let okMacd4h=0, okMacd1h=0;
   for (const c of candidates) {
     process.stdout.write(`   ${c.yahoo.padEnd(10)}`);
-    try { const b=await fetchDailyOHLCV(c.yahoo); ohlcvMap[c.tvSymbol]=b; console.log(`✓ ${b.length} velas`); }
-    catch(e){ console.log(`⚠ ${e.message}`); ohlcvMap[c.tvSymbol]=null; }
+    try {
+      // OHLCV diário (300 velas)
+      const b = await fetchDailyOHLCV(c.yahoo);
+      ohlcvMap[c.tvSymbol] = b;
+      // MACD hist[2] calculado localmente a partir de dados 1H
+      // (TV scanner não suporta [2]|TF — o resolution param é ignorado)
+      const intra = await fetchIntradayMacdHist(c.yahoo);
+      if (intra?.h4?.[0] != null) { c['MACD.hist[2]|240'] = intra.h4[0]; okMacd4h++; }
+      if (intra?.h1?.[0] != null) { c['MACD.hist[2]|60']  = intra.h1[0]; okMacd1h++; }
+      console.log(`✓ ${b.length}d  MACD4H:${intra?.h4?.[0]!=null?'✓':'—'}  MACD1H:${intra?.h1?.[0]!=null?'✓':'—'}`);
+    } catch(e) {
+      console.log(`⚠ ${e.message}`);
+      ohlcvMap[c.tvSymbol] = null;
+    }
   }
+  console.log(`   MACD hist[2] calculado — 4H: ${okMacd4h}/${candidates.length} · 1H: ${okMacd1h}/${candidates.length}`);
 
   console.log('\n🔢 A calcular análise avançada…');
   const records = candidates.map(c => buildRecord(c, ohlcvMap[c.tvSymbol], now));
