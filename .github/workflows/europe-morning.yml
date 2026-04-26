@@ -26,7 +26,7 @@ jobs:
         run: echo "today=$(TZ='Europe/Lisbon' date +'%d/%m/%Y')" >> $GITHUB_OUTPUT
 
       - name: Correr screener europeu
-        run: node screener.mjs
+        run: node tv-screener-live.mjs eu
 
       - name: Enviar email
         uses: dawidd6/action-send-mail@v3

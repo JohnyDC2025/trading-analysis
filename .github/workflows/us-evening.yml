@@ -27,7 +27,7 @@ jobs:
         run: echo "today=$(TZ='Europe/Lisbon' date +'%d/%m/%Y')" >> $GITHUB_OUTPUT
 
       - name: Correr screener americano
-        run: node screener.mjs
+        run: node tv-screener-live.mjs us
 
       - name: Enviar email
         uses: dawidd6/action-send-mail@v3
@@ -40,4 +40,4 @@ jobs:
           subject: "🇺🇸 Top 15 EUA — ${{ steps.date.outputs.today }}"
           to: joaommdc@gmail.com
           from: "Stock Analysis <${{ secrets.GMAIL_USERNAME }}>"
-          html_body: file://report.html
+          html_body: file://report-us.html
