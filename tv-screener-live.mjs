@@ -706,30 +706,57 @@ function buildRecord(cand, dailyBars, now) {
   if (structure.label==='Breakout' && finalSignal.emoji!=='🔴') {
     const rsi1hVal = rsi1h??50;
 
-    // ── Condições de bloqueio → 🔴 (qualquer uma suficiente) ──
-    const brkNoVol     = relVol < 1;                                             // volume relativo < 1×
-    const brkBearDiv   = rsi4h!=null && rsi4h>50 && macd4hTrend.trend==='falling'; // divergência bearish 4H: RSI elevado mas MACD a cair
-    const brkRsi1hOver = rsi1hVal>70 && !(macd1hTrend.trend==='growing'&&relVol>=1.5); // RSI 1H > 70 sem cláusula
-    // MACD D decrescente — já calculado na regra 6; reutilizado aqui para contexto breakout
+    // ── Condições de bloqueio → 🔴 (qualquer uma suficiente; resistência e fora) ──
+    const brkNoVol     = relVol < 1;
+    const brkBearDiv   = rsi4h!=null && rsi4h>50 && macd4hTrend.trend==='falling';
+    const brkRsi1hOver = rsi1hVal>70 && !(macd1hTrend.trend==='growing'&&relVol>=1.5);
     const brkBlocked   = brkNoVol || brkBearDiv || brkRsi1hOver || macdDClearlyDecreasing;
 
     if (brkBlocked) {
-      const brkReason = brkNoVol            ? 'Breakout: sem volume'
-                      : brkBearDiv          ? 'Breakout: divergência bearish 4H'
-                      : brkRsi1hOver        ? 'Breakout: RSI 1H sobrecomprado'
-                      :                       'Breakout: MACD D decrescente';
+      const brkReason = brkNoVol       ? 'Breakout: sem volume'
+                      : brkBearDiv     ? 'Breakout: divergência bearish 4H'
+                      : brkRsi1hOver   ? 'Breakout: RSI 1H sobrecomprado'
+                      :                  'Breakout: MACD D decrescente';
       finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:brkReason};
 
+    } else if (inResistance) {
+      // ── Breakout em Zona de Resistência — condições mais estritas ──
+      // 🟢 exige TODAS (vol≥1.5×, MACD 4H/1H com variação >5%/barra, MACD D ok, padrão ok, VWAP ok)
+      // 🟡 se vol≥1× mas <1.5×, ou alguma condição falha mas estrutura válida
+      // Nota: Rule 4 já demoveu 🟢→🟡; aqui re-avalia e pode promover de volta a 🟢
+      const sigGrow = (a, b) => a!=null&&b!=null ? a-b >= 0.05*Math.abs(b) : false;
+      const brkVolStrong    = relVol >= 1.5;
+      const brkMacd4hStrong = sigGrow(mh4h,mh4hP1) && (mh4hP2==null||sigGrow(mh4hP1,mh4hP2));
+      const brkMacd1hStrong = sigGrow(mh1h,mh1hP1) && (mh1hP2==null||sigGrow(mh1hP1,mh1hP2));
+      const brkMacdDOk      = macdDTrend.trend!=='falling';
+      const brkPatternOk    = pattern.bearish!==true;
+      const brkVwapOk       = vwapPct!=null && vwapPct>=0;
+
+      if (brkVolStrong && brkMacd4hStrong && brkMacd1hStrong && brkMacdDOk && brkPatternOk && brkVwapOk) {
+        // Todas as condições cumpridas → 🟢 permitido (override explícito da Rule 4)
+        finalSignal = {emoji:'🟢', text:'Entrada possível', color:'#1b5e20', bg:'#e8f5e9', score:10,
+                       reason:'Breakout resistência confirmado'};
+      } else {
+        // Condições parcialmente cumpridas → 🟡
+        const failWhy=[];
+        if (!brkVolStrong)    failWhy.push(relVol>=1 ? 'volume <1.5×' : 'sem volume');
+        if (!brkMacd4hStrong) failWhy.push('MACD 4H <5%/barra');
+        if (!brkMacd1hStrong) failWhy.push('MACD 1H <5%/barra');
+        if (!brkVwapOk)       failWhy.push('abaixo VWAP');
+        if (!brkPatternOk)    failWhy.push('padrão bearish');
+        finalSignal = {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5,
+                       reason:`Breakout resistência: ${failWhy.join(' · ')}`};
+      }
+
     } else if (finalSignal.emoji==='🟢') {
-      // ── Condições para manter 🟢 (TODAS obrigatórias) ──
-      const brkMacd4hOk  = macd4hTrend.trend==='growing';        // MACD 4H crescente 3 barras
-      const brkMacd1hOk  = macd1hTrend.trend==='growing';        // MACD 1H crescente 3 barras
-      const brkMacdDOk   = macdDTrend.trend!=='falling';         // MACD D não decrescente
-      const brkPatternOk = pattern.bearish!==true;               // estrutura bullish confirmada
-      const brkVwapOk    = vwapPct!=null && vwapPct>=0;          // preço acima do VWAP
+      // ── Breakout fora de resistência — condições originais (inalteradas) ──
+      const brkMacd4hOk  = macd4hTrend.trend==='growing';
+      const brkMacd1hOk  = macd1hTrend.trend==='growing';
+      const brkMacdDOk   = macdDTrend.trend!=='falling';
+      const brkPatternOk = pattern.bearish!==true;
+      const brkVwapOk    = vwapPct!=null && vwapPct>=0;
 
       if (!(brkMacd4hOk && brkMacd1hOk && brkMacdDOk && brkPatternOk && brkVwapOk)) {
-        // Alguma condição falhou — estrutura válida mas sem confirmação total → 🟡
         const failWhy=[];
         if (!brkMacd4hOk)  failWhy.push('MACD 4H não crescente');
         if (!brkMacd1hOk)  failWhy.push('MACD 1H não crescente');
@@ -739,7 +766,7 @@ function buildRecord(cand, dailyBars, now) {
                        reason:`Breakout parcial: ${failWhy.join(' · ')}`};
       }
     }
-    // Se não bloqueado e finalSignal já é 🟡: mantém-se (breakout watch válido)
+    // 🟡 não bloqueado fora de resistência: mantém-se (watch válido)
   }
 
   const sortScore = finalSignal.score + setup.score + alignment.score + vwapClass.score + structure.score + structRisk.score + pattern.score;
