@@ -283,23 +283,32 @@ function getMacdHistTrend(h2, h1, h0) {
 }
 
 function getAlignment(c) {
-  function tfBull(rsi,rsiP,hist,histP) {
-    let s=0;
-    if (rsi!=null) { if(rsi>55&&rsi<72)s+=1; else if(rsi>=72)s+=0.5; else if(rsi<45)s-=1; }
-    if (rsi!=null&&rsiP!=null) s+=rsi>rsiP+0.3?0.5:rsi<rsiP-0.3?-0.5:0;
-    if (hist!=null&&histP!=null) s+=hist>histP?0.5:-0.5;
-    return s;
+  // Alinhamento baseado em DIRECÇÃO, não em nível.
+  // RSI threshold: ±0.3  |  MACD hist threshold: sem threshold (qualquer mudança conta)
+  // Cada TF: RSI ↑ (+1) RSI ↓ (–1) | MACD ↑ (+1) MACD ↓ (–1) → soma –2..+2
+  // TF bullish  = soma > 0   (mais indicadores a subir do que a cair)
+  // TF bearish  = soma < 0
+  // TF neutro   = soma = 0   (conflito interno: RSI↑+MACD↓ ou RSI↓+MACD↑ ou ambos flat)
+  //
+  // IMPORTANTE: distinguir dois estados distintos no catch-all:
+  //   Desalinhado = TFs a apontar em direcções opostas (pos≥1 E neg≥1)
+  //   Misto       = nenhum TF tem direcção clara (todos neutros/conflituados)
+  function tfDir(rsi, rsiP, hist, histP) {
+    const rsiScore  = (rsi!=null&&rsiP!=null)  ? (rsi >rsiP +0.3?1:rsi <rsiP -0.3?-1:0) : 0;
+    const macdScore = (hist!=null&&histP!=null) ? (hist>histP    ?1:hist<histP    ?-1:0) : 0;
+    return rsiScore + macdScore;
   }
-  const sD  = tfBull(c['RSI'],     c['RSI[1]'],     c['MACD.hist'],    c['MACD.hist[1]']);
-  const s4h = tfBull(c['RSI|240'], c['RSI[1]|240'], c['MACD.hist|240'],c['MACD.hist[1]|240']);
-  const s1h = tfBull(c['RSI|60'],  c['RSI[1]|60'],  c['MACD.hist|60'], c['MACD.hist[1]|60']);
-  const pos=[sD,s4h,s1h].filter(s=>s>0).length;
-  const neg=[sD,s4h,s1h].filter(s=>s<0).length;
-  if (pos===3) return {label:'Alinhado ↑', short:'Alinhado', color:'#26a69a', score:3, bullish:true};
-  if (neg===3) return {label:'Alinhado ↓', short:'Alinhado', color:'#ef5350', score:-1, bullish:false};
-  if (pos===2) return {label:'Parcial ↑',  short:'Parcial',  color:'#ff9800', score:1,  bullish:true};
-  if (neg===2) return {label:'Parcial ↓',  short:'Parcial',  color:'#ff9800', score:0,  bullish:false};
-  return        {label:'Desalinhado', short:'Desalinhado', color:'#ef5350', score:-1, bullish:false};
+  const sD  = tfDir(c['RSI'],     c['RSI[1]'],     c['MACD.hist'],    c['MACD.hist[1]']);
+  const s4h = tfDir(c['RSI|240'], c['RSI[1]|240'], c['MACD.hist|240'],c['MACD.hist[1]|240']);
+  const s1h = tfDir(c['RSI|60'],  c['RSI[1]|60'],  c['MACD.hist|60'], c['MACD.hist[1]|60']);
+  const pos = [sD,s4h,s1h].filter(s=>s>0).length;
+  const neg = [sD,s4h,s1h].filter(s=>s<0).length;
+  if (pos===3) return {label:'Alinhado ↑',  short:'Alinhado',  color:'#26a69a', score:3,  bullish:true};
+  if (neg===3) return {label:'Alinhado ↓',  short:'Alinhado',  color:'#ef5350', score:-1, bullish:false};
+  if (pos===2) return {label:'Parcial ↑',   short:'Parcial',   color:'#ff9800', score:1,  bullish:true};
+  if (neg===2) return {label:'Parcial ↓',   short:'Parcial',   color:'#ff9800', score:0,  bullish:false};
+  if (pos>=1&&neg>=1) return {label:'Desalinhado', short:'Desalinhado', color:'#ef5350', score:-1, bullish:false};
+  return               {label:'Misto →',    short:'Misto',     color:'#9e9e9e', score:0,  bullish:false};
 }
 
 // ─── Prioridade de Timeframe (D dominante · 4H confirmação · 1H timing) ──────
@@ -499,7 +508,8 @@ function getStructuralRisk(c, pattern, structure, alignment) {
   // 🟡 Médio
   if (structure.label==='Consolidação' ||
       structure.label==='Resistência'  ||
-      alignment.short==='Parcial'&&!alignment.bullish ||
+      (alignment.short==='Parcial'&&!alignment.bullish) ||
+      alignment.short==='Misto' ||
       pattern?.label==='Range')
     return {emoji:'🟡', label:'Médio', color:'#ff9800', bg:'#fff8e1', score:0};
 
