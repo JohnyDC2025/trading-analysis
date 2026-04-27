@@ -104,7 +104,7 @@ async function getSymbolsViaCDP() {
   ws.close();
   const seen = new Set(), syms = [];
   for (const url of (hrefs||'').split('|').filter(Boolean)) {
-    const m = url.match(/\/symbols\/([A-Z0-9]+)-([A-Z0-9.]+)\//);
+    const m = url.match(/\/symbols\/([A-Z0-9]+)-([A-Z0-9._]+)\//);
     if (m) { const s=m[1]+':'+m[2]; if(!seen.has(s)){seen.add(s);syms.push(s);} }
   }
   return syms.length > 0 ? syms : null;
@@ -204,8 +204,9 @@ async function fetchIntradayMacdHist(yahooSymbol) {
 function tvToYahoo(tvSym) {
   const [exch, ticker] = tvSym.split(':');
   if (['NASDAQ','NYSE','AMEX','BATS','CBOE'].includes(exch)) return ticker;
-  const map={LSE:'.L',XETRA:'.DE',AMS:'.AS',EPA:'.PA',BIT:'.MI',BME:'.MC',OSL:'.OL',STO:'.ST',HEL:'.HE',CPH:'.CO',VIE:'.VI',SWX:'.SW',FWB:'.F',IST:'.IS',WSE:'.WA',ATH:'.AT',EURONEXT:'.PA'};
-  return ticker+(map[exch]||'');
+  const map={LSE:'.L',XETRA:'.DE',AMS:'.AS',EPA:'.PA',BIT:'.MI',BME:'.MC',OSL:'.OL',STO:'.ST',OMXSTO:'.ST',OMXHEX:'.HE',OMXCOP:'.CO',HEL:'.HE',CPH:'.CO',VIE:'.VI',SWX:'.SW',FWB:'.F',IST:'.IS',WSE:'.WA',ATH:'.AT',EURONEXT:'.PA'};
+  // Yahoo Finance usa '-' onde o TradingView usa '_' (ex: SSAB_B → SSAB-B.ST)
+  return ticker.replace(/_/g, '-')+(map[exch]||'');
 }
 
 // ─── Yahoo Finance: 300 velas diárias ────────────────────────────────────────
