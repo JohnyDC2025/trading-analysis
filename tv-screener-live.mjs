@@ -275,8 +275,11 @@ function getVwapClass(vwapPct) {
 
 function getMacdHistTrend(h2, h1, h0) {
   if (h0==null||h1==null) return {bars:[h2,h1,h0], trend:'unknown', label:'N/D', color:'#9e9e9e'};
+  // 'falling' exige que cada passo desça ≥ 5% do valor absoluto da barra anterior.
+  // Variações residuais (< 5%) não qualificam como decrescente — ficam em 'mixed'.
+  const sigDrop = (a, b) => b - a >= 0.05 * Math.abs(b); // a é ≥5% inferior a b
   const growing = h2!=null ? h0>h1&&h1>h2 : h0>h1;
-  const falling = h2!=null ? h0<h1&&h1<h2 : h0<h1;
+  const falling = h2!=null ? sigDrop(h0,h1)&&sigDrop(h1,h2) : sigDrop(h0,h1);
   if (growing) return {bars:[h2,h1,h0], trend:'growing',  label:'Crescente ↑', color:'#26a69a'};
   if (falling) return {bars:[h2,h1,h0], trend:'falling',  label:'Decrescente ↓', color:'#ef5350'};
   return          {bars:[h2,h1,h0], trend:'mixed',    label:'Misto →',      color:'#ff9800'};
@@ -695,6 +698,48 @@ function buildRecord(cand, dailyBars, now) {
     } else if (finalSignal.emoji==='🟡' && bearishCombo) {
       finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:`MACD D ↓↓ · ${comboReason}`};
     }
+  }
+
+  // ── 7. Validação de Breakout ──
+  // Aplica-se APENAS quando structure === 'Breakout'. Não altera outras estruturas.
+  // Prioridade mantém-se: Diário como tecto, 4H confirmação, 1H timing.
+  if (structure.label==='Breakout' && finalSignal.emoji!=='🔴') {
+    const rsi1hVal = rsi1h??50;
+
+    // ── Condições de bloqueio → 🔴 (qualquer uma suficiente) ──
+    const brkNoVol     = relVol < 1;                                             // volume relativo < 1×
+    const brkBearDiv   = rsi4h!=null && rsi4h>50 && macd4hTrend.trend==='falling'; // divergência bearish 4H: RSI elevado mas MACD a cair
+    const brkRsi1hOver = rsi1hVal>70 && !(macd1hTrend.trend==='growing'&&relVol>=1.5); // RSI 1H > 70 sem cláusula
+    // MACD D decrescente — já calculado na regra 6; reutilizado aqui para contexto breakout
+    const brkBlocked   = brkNoVol || brkBearDiv || brkRsi1hOver || macdDClearlyDecreasing;
+
+    if (brkBlocked) {
+      const brkReason = brkNoVol            ? 'Breakout: sem volume'
+                      : brkBearDiv          ? 'Breakout: divergência bearish 4H'
+                      : brkRsi1hOver        ? 'Breakout: RSI 1H sobrecomprado'
+                      :                       'Breakout: MACD D decrescente';
+      finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:brkReason};
+
+    } else if (finalSignal.emoji==='🟢') {
+      // ── Condições para manter 🟢 (TODAS obrigatórias) ──
+      const brkMacd4hOk  = macd4hTrend.trend==='growing';        // MACD 4H crescente 3 barras
+      const brkMacd1hOk  = macd1hTrend.trend==='growing';        // MACD 1H crescente 3 barras
+      const brkMacdDOk   = macdDTrend.trend!=='falling';         // MACD D não decrescente
+      const brkPatternOk = pattern.bearish!==true;               // estrutura bullish confirmada
+      const brkVwapOk    = vwapPct!=null && vwapPct>=0;          // preço acima do VWAP
+
+      if (!(brkMacd4hOk && brkMacd1hOk && brkMacdDOk && brkPatternOk && brkVwapOk)) {
+        // Alguma condição falhou — estrutura válida mas sem confirmação total → 🟡
+        const failWhy=[];
+        if (!brkMacd4hOk)  failWhy.push('MACD 4H não crescente');
+        if (!brkMacd1hOk)  failWhy.push('MACD 1H não crescente');
+        if (!brkVwapOk)    failWhy.push('abaixo VWAP');
+        if (!brkPatternOk) failWhy.push('padrão bearish');
+        finalSignal = {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5,
+                       reason:`Breakout parcial: ${failWhy.join(' · ')}`};
+      }
+    }
+    // Se não bloqueado e finalSignal já é 🟡: mantém-se (breakout watch válido)
   }
 
   const sortScore = finalSignal.score + setup.score + alignment.score + vwapClass.score + structure.score + structRisk.score + pattern.score;
