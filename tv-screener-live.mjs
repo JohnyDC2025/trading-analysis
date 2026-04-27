@@ -247,8 +247,13 @@ function rsiDir(v, prev) {
 function adxStrength(v) { return !v?'unknown':v>=40?'strong':v>=25?'moderate':'weak'; }
 function stochSignal(k) { return k>80?'overbought':k<20?'oversold':'neutral'; }
 function bbSignal(pos) { return pos>80?'overbought':pos<20?'oversold':'normal'; }
-function scoreVerdict(s) { return s>=5?'strong_buy':s>=3?'buy':s>=0?'neutral':'avoid'; }
 function formatEarnings(ts) { if(!ts)return null; return new Date(ts*1000).toISOString().split('T')[0]; }
+function fmtEarningsBadge(ts) {
+  if (!ts) return null;
+  const d = new Date(ts*1000);
+  const m = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  return `${d.getUTCDate()} ${m[d.getUTCMonth()]}`;
+}
 function calcVWAPFromDaily(bars,n=5) {
   if (!bars?.length) return null;
   const r=bars.slice(-n);
@@ -669,36 +674,9 @@ function buildRecord(cand, dailyBars, now) {
 
   const sortScore = finalSignal.score + setup.score + alignment.score + vwapClass.score + structure.score + structRisk.score + pattern.score;
 
-  // ── Score técnico para JSON ──
+  const [exchange, ticker] = cand.tvSymbol.split(':');
   const rsiSig=rsiSignal(rsiVal), macdTrend=macdHist>macdHistP?'improving':'deteriorating', macdCross=macdLine>macdSig?'bullish':'bearish';
   const bbSig=bbSignal(bbPos);
-  let score=0, signals=[];
-  if(rsiSig==='bullish_zone'){score+=2;signals.push('RSI bullish zone');}
-  if(rsiSig==='oversold'){score+=2;signals.push('RSI oversold');}
-  if(macdTrend==='improving'){score+=2;signals.push('MACD improving');}
-  if(macdCross==='bullish'){score+=1;signals.push('MACD line > signal');}
-  if(priceAboveAll){score+=2;signals.push('Above all EMAs');}
-  if(bullAlign){score+=1;signals.push('EMAs aligned');}
-  if(dominant==='buyers'){score+=1;signals.push('Buyers dominant');}
-  if(bbSig==='oversold'){score+=2;signals.push('BB oversold');}
-  if(rsiSig==='overbought'){score-=2;signals.push('RSI overbought');}
-  if(bbSig==='overbought'){score-=1;signals.push('BB overbought');}
-  if(stochK>80){score-=1;signals.push('Stoch overbought');}
-  if((cand['change|1W']??0)<-3){score-=1;signals.push('Weak weekly trend');}
-  if(rsi4h!=null){
-    if(rsi4h>=50&&rsi4h<70){score+=1;signals.push('RSI 4H bullish zone');}
-    if(rsi4h<30){score+=1;signals.push('RSI 4H oversold');}
-    if(rsi4h>70){score-=1;signals.push('RSI 4H overbought');}
-    if(mh4h!=null&&mh4hP1!=null&&mh4h>mh4hP1){score+=1;signals.push('MACD 4H improving');}
-  }
-  if(rsi1h!=null){
-    if(rsi1h<30){score+=1;signals.push('RSI 1H oversold');}
-    if(rsi1h>70){score-=1;signals.push('RSI 1H overbought');}
-    if(mh1h!=null&&mh1hP1!=null&&mh1h>mh1hP1){score+=1;signals.push('MACD 1H improving');}
-  }
-  if(vwapPct!=null&&vwapPct>0){score+=1;signals.push(`Above VWAP +${vwapPct}%`);}
-
-  const [exchange, ticker] = cand.tvSymbol.split(':');
   return {
     _sortScore: sortScore,
     symbol:ticker, tvSymbol:cand.tvSymbol,
@@ -718,6 +696,8 @@ function buildRecord(cand, dailyBars, now) {
     pattern, priceZone, structRisk,
     // ── Análise existente + TF priority + risk correction ──
     alignment, structure, setup, signal:finalSignal, tfPriority, riskCorrection,
+    earnings: fmtEarningsBadge(cand['earnings_release_next_date']),
+    atrRiskPct: riskPct,
     // ── Para JSON ──
     _json:{
       symbol:ticker, name:cand.description||cand.tvSymbol, sector:cand.sector||null, analysis_date:now,
@@ -740,7 +720,6 @@ function buildRecord(cand, dailyBars, now) {
         macd_1h:mh1h!=null?{hist:r2(mh1h),hist_prev1:r2(mh1hP1),hist_prev2:r2(mh1hP2),line:r2(ml1h),signal:r2(ms1h),trend:mh1hP1!=null?(mh1h>mh1hP1?'improving':'deteriorating'):'unknown',signal_cross:ml1h!=null&&ms1h!=null?(ml1h>ms1h?'bullish':'bearish'):'unknown'}:null,
         vwap:vwapVal!=null?{value:vwapVal,source:vwapTV!=null?'tradingview':'daily_bars_approx',price_vs_vwap:close>=vwapVal?'above':'below',pct_from_vwap:vwapPct}:null
       },
-      composite:{score,signals,verdict:scoreVerdict(score)},
       ohlcv:dailyBars?{bars:dailyBars.length,data:dailyBars}:null
     }
   };
@@ -798,6 +777,7 @@ function generateHTML(records, dateStr) {
     <div class="stock-ticker">${r.symbol}</div>
     <div class="stock-name">${r.name}</div>
     <div class="stock-sector">${r.sector}</div>
+    ${r.earnings?`<div class="stock-earnings">📅 Resultados ${r.earnings}</div>`:''}
   </td>
 
   <!-- PREÇO -->
@@ -875,6 +855,7 @@ function generateHTML(records, dateStr) {
       <span class="risk-label" style="color:${r.structRisk.color}">${r.structRisk.label}</span>
     </div>
     ${r.riskCorrection.count>=2?`<div class="mt4">${r.riskCorrection.factors.map(f=>`<div class="rc-factor">• ${f}</div>`).join('')}</div>`:''}
+    ${r.atrRiskPct!=null?`<div class="mt4 ${r.atrRiskPct>3.5?'atr-over':'atr-ok'}">ATR risco: ${r.atrRiskPct}%${r.atrRiskPct>3.5?'<br><span class="atr-note">⚠ Acima Regra 3%</span>':''}</div>`:''}
   </td>
 
   <!-- SETUP + TV RATING (destacado) -->
@@ -942,6 +923,7 @@ function generateHTML(records, dateStr) {
   .stock-ticker{font-size:14px;font-weight:700;color:var(--white);}
   .stock-name{font-size:11px;color:var(--text);margin-top:2px;}
   .stock-sector{font-size:10px;color:var(--dim);margin-top:2px;}
+  .stock-earnings{font-size:9px;color:#ff9800;margin-top:3px;}
 
   /* PREÇO */
   .col-price{min-width:80px;text-align:right;}
@@ -990,6 +972,9 @@ function generateHTML(records, dateStr) {
   .risk-emoji{font-size:20px;}
   .risk-label{font-size:11px;font-weight:700;}
   .rc-factor{font-size:9px;color:#ef9a9a;margin-top:2px;text-align:left;}
+  .atr-ok{font-size:10px;color:var(--dim);}
+  .atr-over{font-size:10px;color:var(--red);font-weight:600;}
+  .atr-note{font-size:9px;color:var(--red);font-style:italic;}
 
   /* SETUP */
   .col-setup{min-width:175px;background:rgba(33,150,243,.03);}
