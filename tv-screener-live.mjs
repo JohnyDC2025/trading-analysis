@@ -616,59 +616,74 @@ function buildRecord(cand, dailyBars, now) {
   const riskCorrection = getRiskCorrection(cand, priceZone, vwapPct);
 
   let finalSignal = {...signal};
-  // Regras de TF (Diário é dominante — 1H só serve para timing)
+
+  // ── 1. TF Priority: Diário é dominante (≥2 condições bearish bloqueiam 🟢) ──
   if (tfPriority.bearish && finalSignal.emoji==='🟢')
     finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'D bearish'};
   else if (tfPriority.losingMomentum && finalSignal.emoji==='🟢')
     finalSignal = {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5, reason:'D momentum ↓'};
-  // Correcção de risco (aplicada em cima das regras de TF)
+
+  // ── 2. Correcção de Risco automática ──
   if (riskCorrection.count >= 3 && finalSignal.emoji!=='🔴')
     finalSignal = {...finalSignal, emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:`${riskCorrection.count} fatores risco`};
   else if (riskCorrection.count >= 2 && finalSignal.emoji==='🟢')
     finalSignal = {...finalSignal, emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5, reason:`${riskCorrection.count} fatores risco`};
 
-  // ── Validação de Momentum (obrigatória para qualquer entrada) ──
-  // RSI 1H a cair E RSI 4H a cair/neutro → nunca 🟢 nem 🟡
+  // ── 3. Momentum 1H + 4H descendente — contextual ──
+  // Estrutura válida → máximo 🟡 (era: sempre 🔴)
+  // Sem estrutura válida → 🔴
   const rsi1hFalling       = rsi1h!=null&&rsi1hP!=null&&rsi1h < rsi1hP-0.3;
   const rsi4hFallOrNeutral = rsi4h==null||rsi4hP==null||rsi4h <= rsi4hP+0.3;
-  if (rsi1hFalling && rsi4hFallOrNeutral && finalSignal.emoji!=='🔴')
-    finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'Momentum 1H+4H ↓'};
+  const validStructMom     = structure.label==='Pullback'||structure.label==='Consolidação';
+  if (rsi1hFalling && rsi4hFallOrNeutral && finalSignal.emoji!=='🔴') {
+    if (validStructMom)
+      finalSignal = {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5, reason:'Momentum 1H+4H ↓'};
+    else
+      finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'Momentum 1H+4H ↓ · sem estrutura'};
+  }
 
-  // ── Regra de Topo ──
-  // Zona=Resistência + RSI 1H não sobe + MACD D a enfraquecer → 🔴
-  const rsi1hNotRising = rsi1h==null||rsi1hP==null||rsi1h <= rsi1hP+0.3;
-  const macdDWeakening = macdHist < macdHistP;
-  if (priceZone.label==='Resistência' && rsi1hNotRising && macdDWeakening && finalSignal.emoji!=='🔴')
-    finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'Topo: resistência + sem momentum'};
-
-  // ── Validação de 🟡 (condições mínimas obrigatórias) ──
-  // 🟡 só é válido se: estrutura pullback/consolidação + RSI 1H não a cair + fora de resistência
-  if (finalSignal.emoji==='🟡') {
-    const validStruct = structure.label==='Pullback'||structure.label==='Consolidação';
-    const rsi1hOk     = rsi1h==null||rsi1hP==null||rsi1h >= rsi1hP-0.3;
-    const notResist   = priceZone.label!=='Resistência';
-    if (!(validStruct && rsi1hOk && notResist)) {
-      const why=[];
-      if (!validStruct) why.push('estrutura inválida');
-      if (!rsi1hOk)     why.push('RSI 1H ↓');
-      if (!notResist)   why.push('em resistência');
-      finalSignal = {...finalSignal, emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:why.join(' · ')};
+  // ── 4. Zona de Resistência — contextual ──
+  // 🟢 em resistência → nunca automático (requer validação manual) → 🟡
+  // 🟡 + consolidação → OK  |  🟡 + breakout com volume → OK
+  // 🟡 + sem compressão ou sem volume → 🔴
+  const inResistance     = priceZone.label==='Resistência';
+  const consolidacao     = structure.label==='Consolidação';
+  const breakoutStruct   = structure.label==='Breakout';
+  const hasVolume        = relVol >= 1.1;
+  if (inResistance && finalSignal.emoji!=='🔴') {
+    if (finalSignal.emoji==='🟢') {
+      finalSignal = {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5, reason:'Resistência: requer validação'};
+    } else if (finalSignal.emoji==='🟡') {
+      if (!consolidacao && !(breakoutStruct && hasVolume))
+        finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0,
+          reason: breakoutStruct ? 'Resistência: breakout sem volume' : 'Resistência: sem compressão'};
     }
   }
 
-  // ── Prioridade do Diário — reforço: MACD D claramente decrescente ──
-  // "Claramente decrescente" = 3 barras consecutivas a cair (trend==='falling')
+  // ── 5. Validação de 🟡 — estrutura mínima obrigatória ──
+  // Resistência e momentum já tratados acima; aqui verifica-se apenas estrutura base
+  if (finalSignal.emoji==='🟡') {
+    const validStruct4Yellow = structure.label==='Pullback'||structure.label==='Consolidação'||
+                               structure.label==='Tendência bullish'||structure.label==='Breakout';
+    if (!validStruct4Yellow)
+      finalSignal = {...finalSignal, emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'estrutura inválida para 🟡'};
+  }
+
+  // ── 6. MACD D claramente decrescente — limita mas não bloqueia sozinho ──
+  // Sozinho: 🟢 → 🟡 (era: 🟢 → 🔴)
+  // Combinado com ≥1 factor bearish (resistência, RSI fraco, estrutura inválida): 🟢/🟡 → 🔴
   const macdDClearlyDecreasing = macdDTrend.trend === 'falling';
-  if (macdDClearlyDecreasing) {
-    // Nunca permite 🟢
-    if (finalSignal.emoji==='🟢')
-      finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'MACD D decrescente'};
-    // 🟡 só sobrevive se estrutura OK + RSI 1H claramente a subir (↑)
-    if (finalSignal.emoji==='🟡') {
-      const validStruct  = structure.label==='Pullback'||structure.label==='Consolidação';
-      const rsi1hRising  = rsi1h!=null&&rsi1hP!=null&&rsi1h > rsi1hP+0.3;
-      if (!(validStruct && rsi1hRising))
-        finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:'MACD D ↓↓ · sem confirmação 1H'};
+  if (macdDClearlyDecreasing && finalSignal.emoji!=='🔴') {
+    const rsiWeakD      = rsiVal < 45;
+    const structInvalid = !validStructMom; // exige pullback ou consolidação
+    const bearishCombo  = inResistance || rsiWeakD || structInvalid;
+    const comboReason   = inResistance ? 'resistência' : rsiWeakD ? 'RSI fraco' : 'estrutura inválida';
+    if (finalSignal.emoji==='🟢') {
+      finalSignal = bearishCombo
+        ? {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:`MACD D ↓↓ + ${comboReason}`}
+        : {emoji:'🟡', text:'Esperar confirmação', color:'#e65100', bg:'#fff8e1', score:5, reason:'MACD D decrescente'};
+    } else if (finalSignal.emoji==='🟡' && bearishCombo) {
+      finalSignal = {emoji:'🔴', text:'Evitar', color:'#b71c1c', bg:'#ffebee', score:0, reason:`MACD D ↓↓ · ${comboReason}`};
     }
   }
 
@@ -1124,12 +1139,14 @@ ${rows}
     <div class="legend-item"><span class="legend-key">≥ 3 factores</span><span class="legend-val">Sinal corrigido para 🔴 Evitar independentemente do setup</span></div>
   </div>
   <div class="legend-section">
-    <h4>🔍 Validações obrigatórias</h4>
-    <div class="legend-item"><span class="legend-key">Momentum 1H+4H ↓</span><span class="legend-val">RSI 1H a cair E RSI 4H a cair/neutro → nunca 🟢 nem 🟡</span></div>
-    <div class="legend-item"><span class="legend-key">Regra de Topo</span><span class="legend-val">Resistência + RSI 1H não sobe + MACD D fraqueja → 🔴 mesmo sem padrão</span></div>
-    <div class="legend-item"><span class="legend-key">🟡 válido apenas se</span><span class="legend-val">Estrutura pullback/consolidação + RSI 1H não cai + fora de resistência</span></div>
-    <div class="legend-item"><span class="legend-key">estrutura inválida</span><span class="legend-val">🟡 só aceita Pullback ou Consolidação — qualquer outra → 🔴</span></div>
-    <div class="legend-item"><span class="legend-key">MACD D ↓↓ (reforço)</span><span class="legend-val">3 barras consecutivas a cair: nunca 🟢 · 🟡 só se estrutura OK + RSI 1H ↑</span></div>
+    <h4>🔍 Regras contextuais</h4>
+    <div class="legend-item"><span class="legend-key">Momentum 1H+4H ↓</span><span class="legend-val">Com estrutura pullback/consolidação → 🟡 · Sem estrutura → 🔴</span></div>
+    <div class="legend-item"><span class="legend-key">Resistência + consolidação</span><span class="legend-val">🟡 permitido — aguardar breakout da compressão</span></div>
+    <div class="legend-item"><span class="legend-key">Resistência + breakout vol</span><span class="legend-val">Máximo 🟡 — nunca 🟢 automático em resistência</span></div>
+    <div class="legend-item"><span class="legend-key">Resistência + sem estrutura</span><span class="legend-val">→ 🔴 (sem compressão ou volume insuficiente)</span></div>
+    <div class="legend-item"><span class="legend-key">MACD D ↓↓ sozinho</span><span class="legend-val">Limita a 🟡 — não força 🔴 sem contexto</span></div>
+    <div class="legend-item"><span class="legend-key">MACD D ↓↓ + factor bearish</span><span class="legend-val">Resistência ou RSI fraco ou estrutura inválida → 🔴</span></div>
+    <div class="legend-item"><span class="legend-key">🟡 válido apenas se</span><span class="legend-val">Estrutura: Pullback · Consolidação · Tendência bullish · Breakout</span></div>
   </div>
 </div>
 
