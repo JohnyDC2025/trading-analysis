@@ -107,21 +107,26 @@ async function getSymbolsViaCDP() {
     const m = url.match(/\/symbols\/([A-Z0-9]+)-([A-Z0-9._]+)\//);
     if (m) { const s=m[1]+':'+m[2]; if(!seen.has(s)){seen.add(s);syms.push(s);} }
   }
-  return syms.length > 0 ? syms : null;
+  // Devolve sempre o array (pode ser vazio) — null só em caso de erro/sem CDP
+  return syms;
 }
 
 async function getSymbolsFromScreener() {
   // 1. Tentar via CDP (browser aberto localmente)
   const cdpSyms = await getSymbolsViaCDP();
-  if (cdpSyms) {
-    // Guardar no ficheiro de tickers para uso em CI (GitHub Actions)
-    try {
-      writeFileSync(CFG.tickersFile, JSON.stringify(cdpSyms, null, 2), 'utf8');
-      console.log(`   💾 Tickers guardados em ${CFG.tickersFile} (${cdpSyms.length} acções)`);
-    } catch(e) { console.warn(`   ⚠ Não foi possível guardar tickers: ${e.message}`); }
-    return cdpSyms;
+  if (cdpSyms !== null) {
+    // CDP estava disponível — resultado é autoritativo (mesmo que vazio)
+    if (cdpSyms.length > 0) {
+      try {
+        writeFileSync(CFG.tickersFile, JSON.stringify(cdpSyms, null, 2), 'utf8');
+        console.log(`   💾 Tickers guardados em ${CFG.tickersFile} (${cdpSyms.length} acções)`);
+      } catch(e) { console.warn(`   ⚠ Não foi possível guardar tickers: ${e.message}`); }
+    } else {
+      console.log(`   📭 Screener vazio hoje — nenhuma acção passou os filtros`);
+    }
+    return cdpSyms; // [] se vazio — sem fallback para ficheiro
   }
-  // 2. Fallback: ler do ficheiro guardado (CI / browser fechado)
+  // 2. CDP indisponível (browser fechado / sem bat) → fallback para ficheiro guardado
   if (existsSync(CFG.tickersFile)) {
     try {
       const saved = JSON.parse(readFileSync(CFG.tickersFile, 'utf8'));
@@ -1265,7 +1270,14 @@ async function main() {
   console.log(`\n📌 Mercado: ${MARKET.toUpperCase()} — ${SCREENER_NAME}`);
   console.log(`\n🔗 A ler tickers — "${SCREENER_NAME}"…`);
   const liveSyms = await getSymbolsFromScreener();
-  const SYMBOLS  = liveSyms || SYMBOLS_FALLBACK;
+
+  // Screener vazio (CDP ligado mas 0 resultados) — não usar ficheiro nem fallback
+  if (Array.isArray(liveSyms) && liveSyms.length === 0) {
+    console.log(`\n📭 Screener sem resultados hoje — nenhum report gerado.`);
+    return;
+  }
+
+  const SYMBOLS = liveSyms || SYMBOLS_FALLBACK;
   if (!liveSyms) console.log(`   ⚠ A usar fallback hardcoded (${SYMBOLS.length} tickers)`);
   console.log('   ' + SYMBOLS.join(' · '));
 
