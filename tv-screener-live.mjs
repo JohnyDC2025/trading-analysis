@@ -433,17 +433,26 @@ function getPriceZone(c, dailyBars) {
   }
 
   const last20  = dailyBars.slice(-20);
+  const last60  = dailyBars.slice(-Math.min(60, dailyBars.length));
   const high20  = Math.max(...last20.map(b=>b.h));
+  const high60  = Math.max(...last60.map(b=>b.h));
   const low20   = Math.min(...last20.map(b=>b.l));
   const range20 = high20 - low20;
   const posInRange = range20>0 ? (close-low20)/range20*100 : 50;
-  const pctFromHigh = (close-high20)/high20*100;
+  const pctFromHigh20 = (close-high20)/high20*100;
+  const pctFromHigh60 = (close-high60)/high60*100;
 
-  if (Math.abs(pctFromHigh)<1.5 && bbPos>68) return {label:'Breakout zone', color:'#2196f3'};
-  if (pctFromHigh>-4 && bbPos>65)             return {label:'Resistência',   color:'#ef5350'};
-  const nearEMA50 = ema50!=null && Math.abs(close-ema50)/close < 0.025;
-  if (posInRange<30 || nearEMA50)             return {label:'Suporte',       color:'#26a69a'};
-  if (posInRange>=30 && posInRange<=70)        return {label:'Meio do range', color:'#9e9e9e'};
+  if (Math.abs(pctFromHigh20)<1.5 && bbPos>68) return {label:'Breakout zone', color:'#2196f3'};
+  // Resistência recente: dentro de 5% do máximo de 20d + BB confirma
+  if (pctFromHigh20>-5 && bbPos>62)             return {label:'Resistência',   color:'#ef5350'};
+  // Resistência histórica: máximo 60d está ≥3% acima do máximo 20d (nível de resistência anterior)
+  //   → preço está a aproximar-se dessa zona histórica
+  if (pctFromHigh60>-7 && high60>high20*1.03 && bbPos>55) return {label:'Resistência', color:'#ef5350'};
+  // nearEMA50 só é sinal de suporte quando o preço está na metade inferior das BB
+  const nearEMA50 = ema50!=null && Math.abs(close-ema50)/close < 0.025 && bbPos < 55;
+  if (posInRange<30 || nearEMA50)               return {label:'Suporte',       color:'#26a69a'};
+  // "Meio do range" apenas se BB confirma zona média (bbPos<68); se bbPos alto → resistência
+  if (posInRange>=30 && posInRange<=70 && bbPos<68) return {label:'Meio do range', color:'#9e9e9e'};
   return {label:'Resistência', color:'#ef5350'};
 }
 
