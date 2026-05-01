@@ -209,7 +209,7 @@ async function fetchIntradayMacdHist(yahooSymbol) {
 function tvToYahoo(tvSym) {
   const [exch, ticker] = tvSym.split(':');
   if (['NASDAQ','NYSE','AMEX','BATS','CBOE'].includes(exch)) return ticker;
-  const map={LSE:'.L',XETRA:'.DE',AMS:'.AS',EPA:'.PA',BIT:'.MI',BME:'.MC',OSL:'.OL',STO:'.ST',OMXSTO:'.ST',OMXHEX:'.HE',OMXCOP:'.CO',HEL:'.HE',CPH:'.CO',VIE:'.VI',SWX:'.SW',FWB:'.F',IST:'.IS',WSE:'.WA',ATH:'.AT',EURONEXT:'.PA'};
+  const map={LSE:'.L',XETRA:'.DE',AMS:'.AS',EPA:'.PA',BIT:'.MI',BME:'.MC',OSL:'.OL',STO:'.ST',OMXSTO:'.ST',OMXHEX:'.HE',OMXCOP:'.CO',HEL:'.HE',CPH:'.CO',VIE:'.VI',SWX:'.SW',SIX:'.SW',FWB:'.F',IST:'.IS',WSE:'.WA',ATH:'.AT',EURONEXT:'.PA'};
   // Yahoo Finance usa '-' onde o TradingView usa '_' (ex: SSAB_B → SSAB-B.ST)
   return ticker.replace(/_/g, '-')+(map[exch]||'');
 }
