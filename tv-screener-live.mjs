@@ -268,6 +268,69 @@ function calcVWAPFromDaily(bars,n=5) {
   return vol>0?r2(tpv/vol):null;
 }
 
+// ─── Finviz Fundamentals ─────────────────────────────────────────────────────
+const FZ_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Referer': 'https://finviz.com/',
+};
+
+async function fetchFinvizData(ticker) {
+  try {
+    const html = await fetch(
+      `https://finviz.com/quote.ashx?t=${ticker}&ty=c&ta=1&p=d`,
+      { headers: FZ_HEADERS, signal: AbortSignal.timeout(10000) }
+    ).then(r => r.ok ? r.text() : null);
+    if (!html) return null;
+
+    // Extrai pares label→valor em conjunto (evita desalinhamento de índices)
+    // Cada par = célula com label seguida de célula com valor (estrutura da tabela Finviz)
+    const snap = {};
+    const pairRe = /snapshot-td-label[^>]*>(?:<a[^>]*>)?([^<]+?)(?:<\/a>)?<\/div><\/td>\s*<td[^>]*>(?:(?!snapshot-td-label).)*?snapshot-td-content[^>]*>(?:<a[^>]*>)?<b>([^<]*)<\/b>/gs;
+    for (const m of html.matchAll(pairRe)) snap[m[1].trim()] = m[2].trim();
+
+    const parsePct = s => {
+      if (!s || s === '-' || s === 'N/A') return null;
+      return parseFloat(s.replace('%', '')) || null;
+    };
+    return {
+      marketCap:       snap['Market Cap']   || null,
+      float:           snap['Shs Float']    || null,
+      shortFloat:      snap['Short Float']  || null,
+      shortRatio:      snap['Short Ratio']  || null,
+      insiderOwn:      snap['Insider Own']  || null,
+      instOwn:         snap['Inst Own']     || null,
+      instTrans:       snap['Inst Trans']   || null,
+      insiderTrans:    snap['Insider Trans']|| null,
+      shortFloatPct:   parsePct(snap['Short Float']),
+      instTransPct:    parsePct(snap['Inst Trans']),
+      insiderTransPct: parsePct(snap['Insider Trans']),
+    };
+  } catch { return null; }
+}
+
+const FZ_US_EXCHANGES = new Set(['NYSE','NASDAQ','AMEX','BATS','CBOE']);
+
+async function fetchFinvizBatch(tvSymbols) {
+  const tickers = tvSymbols
+    .map(s => { const [exch, tick] = s.split(':'); return FZ_US_EXCHANGES.has(exch) ? tick : null; })
+    .filter(Boolean);
+  if (tickers.length === 0) return {};
+
+  console.log(`\n📊 Finviz fundamentals (${tickers.length} tickers)…`);
+  const result = {};
+  for (const t of tickers) {
+    process.stdout.write(`   ${t.padEnd(8)}`);
+    const d = await fetchFinvizData(t);
+    result[t] = d;
+    if (d) process.stdout.write(`✓  Short: ${(d.shortFloat||'—').padEnd(7)} InstΔ: ${d.instTrans||'—'}\n`);
+    else    process.stdout.write(`✗ (sem dados)\n`);
+    await new Promise(r => setTimeout(r, 800)); // rate limiting
+  }
+  return result;
+}
+
 // ─── ANÁLISE: indicadores base ────────────────────────────────────────────────
 
 function getVwapClass(vwapPct) {
@@ -596,7 +659,7 @@ function getSignal(c, setup, alignment, vwapPct, structure, structuralRisk, patt
 }
 
 // ─── Construir registo completo ───────────────────────────────────────────────
-function buildRecord(cand, dailyBars, now) {
+function buildRecord(cand, dailyBars, now, finviz) {
   const close=cand['close'], open=cand['open'];
   const prevClose=open!=null?r2(close/(1+(cand['change']||0)/100)):null;
   const ema9=cand['EMA9'],ema20=cand['EMA20'],ema50=cand['EMA50'],ema100=cand['EMA100'],ema200=cand['EMA200'];
@@ -810,10 +873,12 @@ function buildRecord(cand, dailyBars, now) {
     alignment, structure, setup, signal:finalSignal, tfPriority, riskCorrection,
     earnings: fmtEarningsBadge(cand['earnings_release_next_date']),
     atrRiskPct: riskPct,
+    finviz: finviz || null,
     // ── Para JSON ──
     _json:{
       symbol:ticker, name:cand.description||cand.tvSymbol, sector:cand.sector||null, analysis_date:now,
       screener:{exchange, price:r2(close), chg:r2(cand['change']), rsi:r2(rsiVal), macd:r2(macdHist), ema50:r2(ema50), ema100:r2(ema100), relVol:r2(relVol), mktCap:formatMktCap(cand['market_cap_basic']), rating:tvRating(cand['Recommend.All']), div:r2(cand['dividends_yield']), earnings:formatEarnings(cand['earnings_release_next_date'])},
+      finviz: finviz ? {marketCap:finviz.marketCap, float:finviz.float, shortFloat:finviz.shortFloat, shortRatio:finviz.shortRatio, insiderOwn:finviz.insiderOwn, instOwn:finviz.instOwn, instTrans:finviz.instTrans, insiderTrans:finviz.insiderTrans} : null,
       tv_symbol:cand.tvSymbol, price:{current:r2(close), prev_close:prevClose},
       price_action:{pattern:{label:pattern.label,bearish:pattern.bearish}, price_zone:priceZone.label, structural_risk:{level:structRisk.label}, structure:structure.label, setup:setup.label, signal:finalSignal.text, tf_priority:tfPriority.label, risk_correction:{count:riskCorrection.count, factors:riskCorrection.factors}},
       indicators:{
@@ -858,6 +923,24 @@ function generateHTML(records, dateStr) {
     return `<span class="macd-bars" style="color:${macdObj.color}">${fmt(h2)} → ${fmt(h1)} → ${fmt(h0)}</span><br><span class="tag" style="background:${macdObj.color}20;color:${macdObj.color}">${macdObj.label}</span>`;
   }
 
+  function finvizCell(fz) {
+    if (!fz) return '<span class="nd" style="font-size:10px">N/D</span>';
+    const sp = fz.shortFloatPct;
+    const squeeze  = sp != null && sp > 20;
+    const highShrt = sp != null && sp > 10;
+    const shortC   = squeeze ? 'val-red' : highShrt ? 'val-yellow' : 'val-white';
+    const itPct    = fz.instTransPct;
+    const itC      = itPct == null ? 'val-dim' : itPct > 2 ? 'fz-inst-buy' : itPct < -2 ? 'fz-inst-sell' : 'val-dim';
+    const itSign   = itPct != null && itPct > 0 ? '+' : '';
+    const ixPct    = fz.insiderTransPct;
+    const ixC      = ixPct == null ? 'val-dim' : ixPct > 0 ? 'fz-inst-buy' : 'fz-inst-sell';
+    const ixSign   = ixPct != null && ixPct > 0 ? '+' : '';
+    return `<div class="fz-row"><span class="fz-lbl">Short</span><span class="${shortC}">${fz.shortFloat||'—'}</span>${squeeze?' <span class="fz-squeeze">🔥 Squeeze</span>':''}</div>
+<div class="fz-row"><span class="fz-lbl">Float</span><span class="val-dim">${fz.float||'—'}</span></div>
+<div class="fz-row mt2"><span class="fz-lbl">InstΔ</span><span class="${itC}">${fz.instTrans?`${itSign}${fz.instTrans}`:'—'}</span></div>
+<div class="fz-row"><span class="fz-lbl">InsΔ</span><span class="${ixC}">${fz.insiderTrans?`${ixSign}${fz.insiderTrans}`:'—'}</span></div>`;
+  }
+
   function tvRecCell(v) {
     if (v==null) return '<span class="nd">N/D</span>';
     const c=v>=0.5?'#26a69a':v>=0.1?'#66bb6a':v>-0.1?'#ff9800':v>-0.5?'#ef9a9a':'#ef5350';
@@ -891,6 +974,9 @@ function generateHTML(records, dateStr) {
     <div class="stock-sector">${r.sector}</div>
     ${r.earnings?`<div class="stock-earnings">📅 Resultados ${r.earnings}</div>`:''}
   </td>
+
+  <!-- FUNDAMENTAIS (Finviz) -->
+  <td class="col-finviz">${finvizCell(r.finviz)}</td>
 
   <!-- PREÇO -->
   <td class="col-price">
@@ -1088,6 +1174,14 @@ function generateHTML(records, dateStr) {
   .atr-over{font-size:10px;color:var(--red);font-weight:600;}
   .atr-note{font-size:9px;color:var(--red);font-style:italic;}
 
+  /* FINVIZ */
+  .col-finviz{min-width:120px;}
+  .fz-row{display:flex;align-items:baseline;gap:5px;margin-bottom:3px;}
+  .fz-lbl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.4px;width:30px;flex-shrink:0;font-weight:600;}
+  .fz-squeeze{display:inline-block;margin-top:3px;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;background:#b71c1c30;color:#ef5350;border:1px solid #ef535040;}
+  .fz-inst-buy{color:var(--green);font-weight:600;}
+  .fz-inst-sell{color:var(--red);font-weight:600;}
+
   /* SETUP */
   .col-setup{min-width:175px;background:rgba(33,150,243,.03);}
   .setup-wrap{padding:6px 10px;border-radius:4px;background:rgba(255,255,255,.03);}
@@ -1155,6 +1249,7 @@ function generateHTML(records, dateStr) {
   <tr>
     <th class="th-signal">🚦 Sinal de decisão</th>
     <th>Acção</th>
+    <th>Fundamentais</th>
     <th style="text-align:right">Preço</th>
     <th>RSI (D / 4H / 1H)</th>
     <th>MACD Histograma (3 barras)</th>
@@ -1316,8 +1411,13 @@ async function main() {
   }
   console.log(`   MACD hist[2] calculado — 4H: ${okMacd4h}/${candidates.length} · 1H: ${okMacd1h}/${candidates.length}`);
 
+  const finvizMap = await fetchFinvizBatch(candidates.map(c => c.tvSymbol));
+
   console.log('\n🔢 A calcular análise avançada…');
-  const records = candidates.map(c => buildRecord(c, ohlcvMap[c.tvSymbol], now));
+  const records = candidates.map(c => {
+    const [, ticker] = c.tvSymbol.split(':');
+    return buildRecord(c, ohlcvMap[c.tvSymbol], now, finvizMap[ticker] || null);
+  });
   records.sort((a,b) => b._sortScore - a._sortScore);
 
   records.forEach(r => {
