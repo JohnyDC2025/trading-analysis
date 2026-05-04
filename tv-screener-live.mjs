@@ -71,10 +71,11 @@ async function getSymbolsViaCDP() {
     const r = await fetch(`http://${CDP_HOST}/json`, { signal: AbortSignal.timeout(3000) });
     tabs = await r.json();
   } catch { return null; }
-  const tab = tabs.find(t => t.type === 'page' && t.url?.includes('tradingview.com'));
-  if (!tab) return null;
-  // Navegar se não estiver exactamente no screener correcto (verifica o ID)
+  // Preferir o tab que já está no screener correcto; senão usar qualquer tab TV
   const screenerId = SCREENER_URL.split('/screener/')[1]?.replace('/', '') || '';
+  const tab = tabs.find(t => t.type === 'page' && t.url?.includes(screenerId))
+           || tabs.find(t => t.type === 'page' && t.url?.includes('tradingview.com'));
+  if (!tab) return null;
   const needsNav = !tab.url.includes(screenerId);
   const ws = new WebSocket(tab.webSocketDebuggerUrl);
   await new Promise(r => { ws.onopen = r; });
@@ -100,7 +101,19 @@ async function getSymbolsViaCDP() {
   await new Promise(r => setTimeout(r, 2000));
   await send('window.scrollTo(0,document.body.scrollHeight)');
   await new Promise(r => setTimeout(r, 1000));
-  const hrefs = await send(`[...document.querySelectorAll('a[href*="/symbols/"]')].map(a=>a.href).join('|')`);
+  // Selector restrito a linhas de resultados do screener (evita links de navegação global)
+  const hrefs = await send(`(() => {
+    const rowSelectors = [
+      '[data-rowid] a[href*="/symbols/"]',
+      '[class*="row-"] a[href*="/symbols/"]',
+      'tbody a[href*="/symbols/"]',
+      'tr a[href*="/symbols/"]',
+    ];
+    for (const sel of rowSelectors) {
+      try { const els=[...document.querySelectorAll(sel)]; if(els.length>0) return els.map(a=>a.href).join('|'); } catch(e){}
+    }
+    return '';
+  })()`)
   ws.close();
   const seen = new Set(), syms = [];
   for (const url of (hrefs||'').split('|').filter(Boolean)) {
