@@ -1,3 +1,27 @@
 [
-  "OMXSTO:SSAB_B"
+  "MIL:UCG",
+  "LSIN:0RLS",
+  "LSIN:0HBC",
+  "EURONEXT:INGA",
+  "LSIN:0RIC",
+  "LSIN:0RLW",
+  "MIL:PST",
+  "LSIN:0RDM",
+  "LSE:IAG",
+  "ATHEX:TPEIR",
+  "SIX:SIGN",
+  "LSIN:0AAE",
+  "LSE:EMG",
+  "LSE:MONY",
+  "LSE:DATA",
+  "OSL:ELK",
+  "OSL:LINK",
+  "LSE:GBG",
+  "LSE:JSG",
+  "LSE:FGEN",
+  "LSE:NRR",
+  "LSE:SLP",
+  "LSE:PTAL",
+  "LSE:ANIC",
+  "LSE:EAAS"
 ]

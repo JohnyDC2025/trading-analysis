@@ -7,6 +7,7 @@ import { writeFileSync, readFileSync, existsSync } from 'fs';
 
 const CDP_HOST = 'localhost:9222';
 const SCAN_URL = 'https://scanner.tradingview.com/global/scan';
+const SCREENER_CONFIG_FILE = `./screener-config-${(process.argv[2]||'eu').toLowerCase()}.json`;
 
 // ─── Configuração por mercado ─────────────────────────────────────────────────
 const MARKET = (process.argv[2] || 'eu').toLowerCase();
@@ -88,7 +89,84 @@ async function getSymbolsViaCDP() {
       ws.send(JSON.stringify({id, method:'Runtime.evaluate', params:{expression:expr, returnByValue:true}}));
     });
   }
-  if (needsNav) {
+  function sendCmd(method, params={}) {
+    const id = ++msgId;
+    return new Promise(res => {
+      const h = e => { const m = JSON.parse(e.data); if (m.id===id){ws.removeEventListener('message',h);res(m.result);} };
+      ws.addEventListener('message', h);
+      ws.send(JSON.stringify({id, method, params}));
+    });
+  }
+
+  // ── Capturar filtros via Network domain (funciona mesmo que TV Desktop use canal nativo) ──
+  const needsCapture = !existsSync(SCREENER_CONFIG_FILE);
+  let capturedRequestId = null;
+  let capturedPostData  = null;
+
+  if (needsCapture) {
+    // Activar captura de rede e registar handler de eventos
+    await sendCmd('Network.enable', {});
+    // Recolher TODOS os requestIds de chamadas ao scanner (pode haver várias)
+    const scannerRequests = [];
+    const netHandler = e => {
+      try {
+        const m = JSON.parse(e.data);
+        if (m.method === 'Network.requestWillBeSent') {
+          const req = m.params?.request;
+          if (req?.url?.includes('scanner.tradingview.com') && req?.method === 'POST') {
+            scannerRequests.push({ id: m.params.requestId, postData: req.postData || null });
+          }
+        }
+      } catch {}
+    };
+    ws.addEventListener('message', netHandler);
+
+    // Navegar ou recarregar para provocar as chamadas à API do scanner
+    let nid = ++msgId;
+    await new Promise(res => {
+      const h = e => { const m = JSON.parse(e.data); if(m.id===nid){ws.removeEventListener('message',h);res();} };
+      ws.addEventListener('message', h);
+      if (needsNav) {
+        ws.send(JSON.stringify({id:nid, method:'Page.navigate', params:{url:SCREENER_URL}}));
+      } else {
+        ws.send(JSON.stringify({id:nid, method:'Page.reload', params:{}}));
+      }
+    });
+    await new Promise(r => setTimeout(r, 6000)); // esperar mais tempo para capturar todos
+    ws.removeEventListener('message', netHandler);
+
+    // Para cada request, tentar obter postData se não veio no evento
+    for (const req of scannerRequests) {
+      if (!req.postData) {
+        const pd = await sendCmd('Network.getRequestPostData', { requestId: req.id });
+        req.postData = pd?.postData || null;
+      }
+    }
+
+    // Escolher o request com mais dados (mais filtros técnicos) = maior payload
+    const bestReq = scannerRequests
+      .filter(r => r.postData)
+      .sort((a, b) => b.postData.length - a.postData.length)[0];
+
+    capturedPostData = bestReq?.postData || null;
+
+    // Guardar filtros — body COMPLETO (excluindo apenas columns e range)
+    if (capturedPostData) {
+      try {
+        const bodyObj = JSON.parse(capturedPostData);
+        const { columns: _c, range: _r, ...cfg } = bodyObj;
+        if (Object.keys(cfg).length > 0) {
+          writeFileSync(SCREENER_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+          const nReqs = scannerRequests.length;
+          console.log(`   💾 Filtros guardados em ${SCREENER_CONFIG_FILE} (${nReqs} req${nReqs!==1?'s':''}, chaves: ${Object.keys(cfg).join(', ')})`);
+        } else {
+          console.warn(`   ⚠ Body capturado mas vazio após remoção de columns/range`);
+        }
+      } catch(e) { console.warn(`   ⚠ Não foi possível parsear filtros: ${e.message}`); }
+    } else {
+      console.warn(`   ⚠ Network.enable não capturou body (${scannerRequests.length} reqs) — TV Desktop pode usar canal nativo`);
+    }
+  } else if (needsNav) {
     let nid = ++msgId;
     await new Promise(res => {
       const h = e => { const m = JSON.parse(e.data); if(m.id===nid){ws.removeEventListener('message',h);res();} };
@@ -97,6 +175,7 @@ async function getSymbolsViaCDP() {
     });
     await new Promise(r => setTimeout(r, 4000));
   }
+
   await send('window.scrollTo(0,document.body.scrollHeight)');
   await new Promise(r => setTimeout(r, 2000));
   await send('window.scrollTo(0,document.body.scrollHeight)');
@@ -124,6 +203,31 @@ async function getSymbolsViaCDP() {
   return syms;
 }
 
+// ─── TV Scanner API directa (sem CDP — para GitHub Actions) ──────────────────
+async function getSymbolsViaTVAPI() {
+  if (!existsSync(SCREENER_CONFIG_FILE)) return null;
+  try {
+    const cfg = JSON.parse(readFileSync(SCREENER_CONFIG_FILE, 'utf8'));
+    if (!cfg?.filter && !cfg?.filter2) { console.warn('   ⚠ Ficheiro de config inválido'); return null; }
+    // Só precisamos dos símbolos — colunas mínimas para resposta rápida
+    const body = { ...cfg, columns: ['name'], range: [0, 500] };
+    const resp = await fetch(SCAN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0', 'Origin': 'https://www.tradingview.com', 'Referer': 'https://www.tradingview.com/' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!resp.ok) { console.warn(`   ⚠ TV API HTTP ${resp.status}`); return null; }
+    const json = await resp.json();
+    const syms = (json.data || []).map(d => d.s).filter(Boolean);
+    console.log(`   🌐 ${syms.length} tickers via TV Scanner API (filtros guardados)`);
+    return syms;
+  } catch(e) {
+    console.warn(`   ⚠ TV API falhou: ${e.message}`);
+    return null;
+  }
+}
+
 async function getSymbolsFromScreener() {
   // 1. Tentar via CDP (browser aberto localmente)
   const cdpSyms = await getSymbolsViaCDP();
@@ -139,18 +243,29 @@ async function getSymbolsFromScreener() {
     }
     return cdpSyms; // [] se vazio — sem fallback para ficheiro
   }
-  // 2. CDP indisponível (browser fechado / sem bat) → fallback para ficheiro guardado
+  // 2. CDP indisponível → TV Scanner API directa com filtros guardados
+  console.log(`   📡 CDP indisponível — a tentar TV Scanner API…`);
+  const apiSyms = await getSymbolsViaTVAPI();
+  if (apiSyms !== null) {
+    if (apiSyms.length > 0) {
+      try { writeFileSync(CFG.tickersFile, JSON.stringify(apiSyms, null, 2), 'utf8'); } catch(e) {}
+    } else {
+      console.log(`   📭 Screener vazio hoje (via API)`);
+    }
+    return apiSyms;
+  }
+  // 3. Fallback: ficheiro guardado (tickers do último run local)
   if (existsSync(CFG.tickersFile)) {
     try {
       const saved = JSON.parse(readFileSync(CFG.tickersFile, 'utf8'));
       if (Array.isArray(saved) && saved.length > 0) {
-        console.log(`   📋 Tickers do ficheiro ${CFG.tickersFile} (${saved.length} acções)`);
+        console.log(`   📋 Tickers do ficheiro ${CFG.tickersFile} (${saved.length} acções) ⚠ filtros não disponíveis`);
         return saved;
       }
     } catch(e) {}
   }
-  // 3. Último recurso: hardcoded
-  console.warn(`   ⚠ Sem CDP nem ficheiro — a usar fallback hardcoded`);
+  // 4. Último recurso: hardcoded
+  console.warn(`   ⚠ Sem CDP, API nem ficheiro — a usar fallback hardcoded`);
   return null;
 }
 

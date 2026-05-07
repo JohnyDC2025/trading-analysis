@@ -1,0 +1,176 @@
+{
+  "filter": [
+    {
+      "left": "change",
+      "operation": "greater",
+      "right": 0.5
+    },
+    {
+      "left": "average_volume_10d_calc",
+      "operation": "greater",
+      "right": 1000000
+    },
+    {
+      "left": "market_cap_basic",
+      "operation": "egreater",
+      "right": 1000000000
+    },
+    {
+      "left": "RSI|60",
+      "operation": "in_range",
+      "right": [
+        40,
+        65
+      ]
+    },
+    {
+      "left": "AnalystRating",
+      "operation": "in_range",
+      "right": [
+        "Buy",
+        "StrongBuy"
+      ]
+    },
+    {
+      "left": "close",
+      "operation": "egreater",
+      "right": 10
+    },
+    {
+      "left": "MACD.macd|60",
+      "operation": "greater",
+      "right": "MACD.signal|60"
+    },
+    {
+      "left": "EMA50",
+      "operation": "less",
+      "right": "close"
+    },
+    {
+      "left": "RSI",
+      "operation": "less",
+      "right": 70
+    },
+    {
+      "left": "MACD.macd|240",
+      "operation": "greater",
+      "right": "MACD.signal|240"
+    }
+  ],
+  "ignore_unknown_fields": false,
+  "options": {
+    "lang": "en"
+  },
+  "sort": {
+    "sortBy": "ticker-view-sort",
+    "sortOrder": "asc"
+  },
+  "markets": [
+    "america"
+  ],
+  "filter2": {
+    "operator": "and",
+    "operands": [
+      {
+        "operation": {
+          "operator": "or",
+          "operands": [
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "common"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "preferred"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "dr"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "fund"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has_none_of",
+                      "right": [
+                        "etf",
+                        "mutual"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "expression": {
+          "left": "typespecs",
+          "operation": "has_none_of",
+          "right": [
+            "pre-ipo"
+          ]
+        }
+      }
+    ]
+  }
+}

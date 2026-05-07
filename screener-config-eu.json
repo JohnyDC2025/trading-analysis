@@ -1,0 +1,190 @@
+{
+  "filter": [
+    {
+      "left": "EMA50",
+      "operation": "less",
+      "right": "close"
+    },
+    {
+      "left": "MACD.signal",
+      "operation": "less",
+      "right": "MACD.macd"
+    },
+    {
+      "left": "AnalystRating",
+      "operation": "in_range",
+      "right": [
+        "Buy",
+        "StrongBuy"
+      ]
+    },
+    {
+      "left": "EMA100",
+      "operation": "less",
+      "right": "close"
+    },
+    {
+      "left": "RSI",
+      "operation": "in_range",
+      "right": [
+        50,
+        70
+      ]
+    },
+    {
+      "left": "change",
+      "operation": "greater",
+      "right": 0.5
+    },
+    {
+      "left": "close",
+      "operation": "egreater",
+      "right": 5
+    },
+    {
+      "left": "average_volume_10d_calc",
+      "operation": "greater",
+      "right": 1000000
+    }
+  ],
+  "ignore_unknown_fields": false,
+  "options": {
+    "lang": "en"
+  },
+  "price_conversion": {
+    "to_currency": "usd"
+  },
+  "sort": {
+    "sortBy": "market_cap_basic",
+    "sortOrder": "desc"
+  },
+  "markets": [
+    "germany",
+    "uk",
+    "france",
+    "greece",
+    "ireland",
+    "italy",
+    "portugal",
+    "spain",
+    "sweden",
+    "switzerland",
+    "cyprus",
+    "czech",
+    "denmark",
+    "finland",
+    "iceland",
+    "hungary",
+    "estonia",
+    "luxembourg",
+    "netherlands",
+    "norway",
+    "poland",
+    "romania"
+  ],
+  "filter2": {
+    "operator": "and",
+    "operands": [
+      {
+        "operation": {
+          "operator": "or",
+          "operands": [
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "common"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "stock"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has",
+                      "right": [
+                        "preferred"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "dr"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "operation": {
+                "operator": "and",
+                "operands": [
+                  {
+                    "expression": {
+                      "left": "type",
+                      "operation": "equal",
+                      "right": "fund"
+                    }
+                  },
+                  {
+                    "expression": {
+                      "left": "typespecs",
+                      "operation": "has_none_of",
+                      "right": [
+                        "etf",
+                        "mutual"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "expression": {
+          "left": "typespecs",
+          "operation": "has_none_of",
+          "right": [
+            "pre-ipo"
+          ]
+        }
+      }
+    ]
+  }
+}
